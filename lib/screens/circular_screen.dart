@@ -985,7 +985,6 @@ class _CircularScreenState extends State<CircularScreen> {
         onBack: widget.onBack,
       ),
       body: ListView(
-        physics: const BouncingScrollPhysics(),
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
         children: [
           // AUDIENCE

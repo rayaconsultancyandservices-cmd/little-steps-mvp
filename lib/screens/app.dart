@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:little_steps_mvp/screens/splash_screen.dart';
 import '../theme/app_theme.dart';
 import 'main_shell.dart';
 
@@ -11,7 +12,7 @@ class LittleStepsApp extends StatelessWidget {
       title: 'Little Steps',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light,
-      home: const MainShell(),
+      home: const SplashScreen(),
     );
   }
 }

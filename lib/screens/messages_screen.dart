@@ -1,4 +1,3 @@
-
 import 'package:flutter/material.dart';
 
 import '../state/app_state.dart';
@@ -80,9 +79,6 @@ class _MessagesScreenState extends State<MessagesScreen> {
     ),
   ];
 
-  int get _unreadCount =>
-      _parents.fold(0, (sum, parent) => sum + parent.unread);
-
   @override
   void dispose() {
     _search.dispose();
@@ -145,139 +141,10 @@ class _MessagesScreenState extends State<MessagesScreen> {
         title: 'Messages',
         subtitle: 'Parents of ${AppState.instance.className}',
         onBack: widget.onBack,
-        actions: [
-          IconButton(
-            tooltip: 'Message information',
-            onPressed: _showInfo,
-            icon: const Icon(
-              Icons.info_outline_rounded,
-              color: _primary,
-            ),
-          ),
-          const SizedBox(width: 5),
-        ],
       ),
       body: ListView(
-        physics: const BouncingScrollPhysics(),
-        padding: const EdgeInsets.fromLTRB(16, 13, 16, 22),
+        padding: const EdgeInsets.fromLTRB(16, 18, 16, 22),
         children: [
-          // HEADER CARD
-          Container(
-            padding: const EdgeInsets.all(18),
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                colors: [
-                  Color(0xFF2F8877),
-                  Color(0xFF55AD96),
-                ],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
-              borderRadius: BorderRadius.circular(21),
-            ),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'Stay Connected!',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 20,
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
-                      const SizedBox(height: 7),
-                      Text(
-                        'Communicate with parents and '
-                            'keep families updated.',
-                        style: TextStyle(
-                          color: Colors.white.withValues(alpha: 0.88),
-                          fontSize: 11,
-                          height: 1.5,
-                        ),
-                      ),
-                      const SizedBox(height: 13),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 6,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: 0.17),
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                        child: Text(
-                          '$_unreadCount unread messages',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 10,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Container(
-                  height: 68,
-                  width: 68,
-                  decoration: BoxDecoration(
-                    color: Colors.white.withValues(alpha: 0.17),
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: const Icon(
-                    Icons.forum_rounded,
-                    color: Colors.white,
-                    size: 36,
-                  ),
-                ),
-              ],
-            ),
-          ),
-
-          const SizedBox(height: 18),
-
-          // MESSAGE SUMMARY
-          Row(
-            children: [
-              Expanded(
-                child: _summaryCard(
-                  'Conversations',
-                  '${_parents.length}',
-                  Icons.chat_bubble_outline_rounded,
-                  const Color(0xFFE5F0FF),
-                  const Color(0xFF4786C7),
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: _summaryCard(
-                  'Unread',
-                  '$_unreadCount',
-                  Icons.mark_chat_unread_rounded,
-                  const Color(0xFFFFF0DE),
-                  const Color(0xFFD99437),
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: _summaryCard(
-                  'Read',
-                  '${_parents.where((p) => p.unread == 0).length}',
-                  Icons.done_all_rounded,
-                  const Color(0xFFE4F4EC),
-                  const Color(0xFF29966F),
-                ),
-              ),
-            ],
-          ),
-
-          const SizedBox(height: 22),
-
           // SEARCH
           const Text(
             'Parent Conversations',
@@ -418,64 +285,6 @@ class _MessagesScreenState extends State<MessagesScreen> {
                   ),
                 ),
               ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _summaryCard(
-      String title,
-      String value,
-      IconData icon,
-      Color background,
-      Color foreground,
-      ) {
-    return Container(
-      padding: const EdgeInsets.symmetric(
-        vertical: 13,
-        horizontal: 5,
-      ),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(15),
-        border: Border.all(
-          color: const Color(0xFFE7EEEA),
-        ),
-      ),
-      child: Column(
-        children: [
-          Container(
-            height: 33,
-            width: 33,
-            decoration: BoxDecoration(
-              color: background,
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Icon(
-              icon,
-              color: foreground,
-              size: 18,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            value,
-            style: const TextStyle(
-              color: _dark,
-              fontSize: 19,
-              fontWeight: FontWeight.w800,
-            ),
-          ),
-          const SizedBox(height: 3),
-          Text(
-            title,
-            textAlign: TextAlign.center,
-            style: const TextStyle(
-              color: _muted,
-              fontSize: 9,
-              fontWeight: FontWeight.w600,
             ),
           ),
         ],
@@ -703,39 +512,6 @@ class _MessagesScreenState extends State<MessagesScreen> {
               child: const Text('Clear filters'),
             ),
           ],
-        ],
-      ),
-    );
-  }
-
-  void _showInfo() {
-    showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(18),
-        ),
-        title: const Text(
-          'Messages Information',
-          style: TextStyle(
-            fontWeight: FontWeight.w800,
-            fontSize: 16,
-          ),
-        ),
-        content: const Text(
-          'This screen shows parent conversations for your class. '
-              'Unread messages are marked with a badge. '
-              'Open a conversation to read and reply.',
-          style: TextStyle(
-            fontSize: 12,
-            height: 1.6,
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Close'),
-          ),
         ],
       ),
     );
