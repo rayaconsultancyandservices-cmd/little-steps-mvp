@@ -15,15 +15,30 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
+        // हा आयडी flavors मध्ये override होतो, म्हणून तसाच ठेवला आहे.
         applicationId = "com.example.little_steps_mvp"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
     }
+
+    // ===== नवीन: Teacher आणि Parent चे वेगळे flavors =====
+    flavorDimensions += "role"
+
+    productFlavors {
+        create("teacher") {
+            dimension = "role"
+            applicationId = "com.example.little_steps_mvp.teacher"
+            manifestPlaceholders["appName"] = "Little Steps Teacher"
+        }
+        create("parent") {
+            dimension = "role"
+            applicationId = "com.example.little_steps_mvp.parent"
+            manifestPlaceholders["appName"] = "Little Steps Parent"
+        }
+    }
+    // =====================================================
 
     buildTypes {
         release {

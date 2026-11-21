@@ -342,9 +342,17 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
     if (!mounted) return;
 
+    // FIX 2: प्रत्येक मुलाची खरी स्थिती (P / A / L) AppState ला पाठवली जाते.
+    // पूर्वी हा map पाठवला जात नव्हता, त्यामुळे Parent ला Aarav
+    // नेहमी "Present" दिसायचा, तो Absent असला तरी.
+    final statuses = <String, String?>{
+      for (final s in students) s.name: s.status,
+    };
+
     AppState.instance.saveAttendance(
       present: present,
       absent: absent,
+      statuses: statuses,
     );
 
     setState(() => isSaving = false);

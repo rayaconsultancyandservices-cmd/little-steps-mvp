@@ -256,7 +256,31 @@ class _PhotosScreenState extends State<PhotosScreen> {
     await Future<void>.delayed(const Duration(milliseconds: 500));
     if (!mounted) return;
 
-    AppState.instance.addPhotos(count);
+    // FIX 5: आता खरे tags, caption आणि whole-class माहिती AppState ला जाते.
+    // - "Selected children" mode: प्रत्येक photo वर tag केलेल्या मुलांची नावं.
+    // - "Whole class" mode: tags रिकामे (सगळ्या वर्गाला दिसतात).
+    final isWholeClass = _mode == 1;
+    final captionText = _caption.text.trim();
+    final fullCaption = [
+      if (_activity != null) _activity!,
+      if (captionText.isNotEmpty) captionText,
+    ].join(' · ');
+
+    final sharedPhotos = _photos
+        .map(
+          (p) => SharedPhoto(
+        p.colorIndex,
+        isWholeClass ? <String>[] : p.tags.toList(),
+      ),
+    )
+        .toList();
+
+    AppState.instance.addPhotos(
+      count,
+      photos: sharedPhotos,
+      caption: fullCaption,
+      wholeClass: isWholeClass,
+    );
 
     setState(() {
       _sending = false;

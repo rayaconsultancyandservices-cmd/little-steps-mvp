@@ -32,3 +32,5 @@ flutter:
   assets:
     - assets/images/teacher_logo.png
     - assets/images/smart_school_splash_books.png
+    - assets/images/parent_splash_pencil.png
+    - assets/images/parent_icon.png

@@ -118,8 +118,32 @@ class _MessagesScreenState extends State<MessagesScreen> {
     });
   }
 
+  // FIX 8: यादीतला "शेवटचा संदेश" आणि वेळ AppState च्या chat मधून घेतो.
+  void _syncLast(_Parent parent) {
+    final thread = AppState.instance.thread(
+      parent.name,
+      seed: parent.message,
+      seedTime: parent.time,
+    );
+    if (thread.isNotEmpty) {
+      parent.message = thread.last.text;
+      parent.time = thread.last.time;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    // Parent ने नवीन संदेश पाठवला की ही यादी आपोआप refresh होते.
+    return AnimatedBuilder(
+      animation: AppState.instance,
+      builder: (context, _) => _buildScreen(context),
+    );
+  }
+
+  Widget _buildScreen(BuildContext context) {
+    for (final p in _parents) {
+      _syncLast(p);
+    }
     final query = _search.text.trim().toLowerCase();
 
     final filtered = _parents.where((parent) {
@@ -570,13 +594,26 @@ class _ChatScreenState extends State<ChatScreen> {
 
   final ScrollController _scroll = ScrollController();
 
-  late final List<_Msg> _messages = [
-    _Msg(
-      widget.firstMessage,
-      false,
-      widget.firstTime,
-    ),
-  ];
+  // FIX 6: Chat आता AppState च्या shared thread मधून येतो
+  // (Parent app चा ParentMessageScreen हाच thread वापरतो).
+  // Parent चा पहिला संदेश seed म्हणून थ्रेडमध्ये ठेवला जातो.
+  List<_Msg> get _messages {
+    final thread = AppState.instance.thread(
+      widget.parentName,
+      seed: widget.firstMessage,
+      seedTime: widget.firstTime,
+    );
+    return thread
+        .map((m) => _Msg(m.text, m.fromTeacher, m.time))
+        .toList();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    // Chat उघडल्यावर शेवटच्या संदेशाकडे जा.
+    _scrollToBottom();
+  }
 
   @override
   void dispose() {
@@ -590,16 +627,14 @@ class _ChatScreenState extends State<ChatScreen> {
 
     if (text.isEmpty) return;
 
-    setState(() {
-      _messages.add(
-        _Msg(
-          text,
-          true,
-          AppState.timeLabel(DateTime.now()),
-        ),
-      );
-      _controller.clear();
-    });
+    // FIX 6: संदेश AppState मध्ये save होतो -> Parent ला लगेच दिसतो.
+    AppState.instance.sendMessage(
+      widget.parentName,
+      text,
+      fromTeacher: true,
+    );
+    _controller.clear();
+    setState(() {});
 
     _scrollToBottom();
   }
@@ -704,14 +739,18 @@ class _ChatScreenState extends State<ChatScreen> {
 
           // CHAT MESSAGES
           Expanded(
-            child: ListView.builder(
-              controller: _scroll,
-              padding: const EdgeInsets.fromLTRB(14, 4, 14, 14),
-              itemCount: _messages.length,
-              itemBuilder: (context, index) {
-                final message = _messages[index];
-
-                return _messageBubble(message);
+            // FIX 6: Parent ने नवीन संदेश पाठवला तर इथे आपोआप refresh होतो.
+            child: AnimatedBuilder(
+              animation: AppState.instance,
+              builder: (context, _) {
+                final messages = _messages;
+                return ListView.builder(
+                  controller: _scroll,
+                  padding: const EdgeInsets.fromLTRB(14, 4, 14, 14),
+                  itemCount: messages.length,
+                  itemBuilder: (context, index) =>
+                      _messageBubble(messages[index]),
+                );
               },
             ),
           ),

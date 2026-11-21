@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:little_steps_mvp/config/app_config.dart';
 import 'package:little_steps_mvp/screens/splash_screen.dart';
-import '../theme/app_theme.dart';
-import 'main_shell.dart';
+import 'Parents/parent_splash_screen.dart';
+import 'theme/app_theme.dart';
 
 class LittleStepsApp extends StatelessWidget {
   const LittleStepsApp({super.key});
@@ -9,10 +10,10 @@ class LittleStepsApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Little Steps',
+      title: AppConfig.appTitle,
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light,
-      home: const SplashScreen(),
+      home: AppConfig.isParent ? const ParentSplashScreen() : const SplashScreen(),
     );
   }
 }

@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:little_steps_mvp/screens/app.dart';
+import 'package:little_steps_mvp/app.dart';
 import 'package:little_steps_mvp/screens/login_screen.dart';
 import 'package:little_steps_mvp/screens/main_shell.dart';
 

@@ -783,16 +783,22 @@ class _CircularScreenState extends State<CircularScreen> {
     await Future<void>.delayed(const Duration(milliseconds: 450));
     if (!mounted) return;
 
-    // AppState stores circular metadata locally.
-    // The message is not stored by the current model.
+    // FIX 4: आता message, important आणि scheduledFor सुद्धा AppState ला जातात,
+    // त्यामुळे Parent ला पूर्ण message, "Important" tag दिसतो आणि
+    // scheduled circular ठरलेल्या वेळेपर्यंत लपून राहतो.
     final record = CircularRecord(
       title: title,
       audience: audience,
       category: category,
       families: families,
-      sentAt: DateTime.now(),
+      // Scheduled असेल तर "sent" वेळ = ठरलेली वेळ, नाहीतर आत्ताची वेळ.
+      sentAt: scheduled ?? DateTime.now(),
       eventDate: _eventDate,
       attachment: _attachment,
+      message: _message.text.trim(),
+      important: _important,
+      scheduledFor: scheduled,
+      needsAck: _needsAck,
     );
 
     _extras[record] = _SentExtra(
@@ -811,7 +817,7 @@ class _CircularScreenState extends State<CircularScreen> {
     _showMessage(
       scheduled != null
           ? 'Circular scheduled for ${_dateTimeLabel(scheduled)}.'
-          : 'Circular saved in demo history for $families families.',
+          : 'Circular sent to $families families.',
     );
   }
 

@@ -3,7 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import 'main_shell.dart';
+import '../config/app_config.dart';
 import 'register_screen.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -22,6 +22,9 @@ class _LoginScreenState extends State<LoginScreen>
   bool hidePassword = true;
   bool rememberMe = false;
   bool isLoading = false;
+
+  // Role आता APK नुसार ठरतो (main_teacher / main_parent मधून).
+  final bool isParent = AppConfig.isParent;
 
   // Animations
   late final AnimationController _introController; // card entrance
@@ -62,7 +65,7 @@ class _LoginScreenState extends State<LoginScreen>
   // ---------------------------------------------------------------
   // ACTIONS
   // ---------------------------------------------------------------
-  void loginTeacher() {
+  void login() {
     FocusScope.of(context).unfocus();
 
     if (!_formKey.currentState!.validate()) return;
@@ -76,15 +79,20 @@ class _LoginScreenState extends State<LoginScreen>
       setState(() => isLoading = false);
 
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Demo Login Successful!'),
+        SnackBar(
+          content: Text(
+            isParent
+                ? 'Demo Parent Login Successful!'
+                : 'Demo Teacher Login Successful!',
+          ),
           behavior: SnackBarBehavior.floating,
         ),
       );
 
+      // या APK चा स्वतःचा home screen उघडतो (AppConfig.homeBuilder).
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(builder: (_) => const MainShell()),
+        MaterialPageRoute(builder: (_) => AppConfig.homeBuilder()),
       );
     });
   }
@@ -375,9 +383,9 @@ class _LoginScreenState extends State<LoginScreen>
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            const Text(
-                              'Teacher App',
-                              style: TextStyle(
+                            Text(
+                              isParent ? 'Parent App' : 'Teacher App',
+                              style: const TextStyle(
                                 fontSize: 24,
                                 fontWeight: FontWeight.w800,
                                 color: dark,
@@ -393,9 +401,11 @@ class _LoginScreenState extends State<LoginScreen>
                               ),
                             ),
                             const SizedBox(height: 7),
-                            const Text(
-                              'Manage Classes,\nTrack Progress and\nStay Connected',
-                              style: TextStyle(
+                            Text(
+                              isParent
+                                  ? 'See Photos, Diary,\nCirculars and Fees\nof Your Child'
+                                  : 'Manage Classes,\nTrack Progress and\nStay Connected',
+                              style: const TextStyle(
                                 fontSize: 12,
                                 height: 1.4,
                                 color: dark,
@@ -572,9 +582,11 @@ class _LoginScreenState extends State<LoginScreen>
               ),
             ),
             const SizedBox(height: 2),
-            const Text(
-              'Sign in to continue as Teacher',
-              style: TextStyle(fontSize: 13, color: muted),
+            Text(
+              isParent
+                  ? 'Sign in to continue as Parent'
+                  : 'Sign in to continue as Teacher',
+              style: const TextStyle(fontSize: 13, color: muted),
             ),
             const SizedBox(height: 12),
 
@@ -607,7 +619,7 @@ class _LoginScreenState extends State<LoginScreen>
               obscureText: hidePassword,
               textInputAction: TextInputAction.done,
               autofillHints: const [AutofillHints.password],
-              onFieldSubmitted: (_) => loginTeacher(),
+              onFieldSubmitted: (_) => login(),
               style: const TextStyle(fontSize: 14.5, color: dark),
               decoration: fieldDecoration(
                 hint: 'Password',
@@ -704,7 +716,7 @@ class _LoginScreenState extends State<LoginScreen>
                 ],
               ),
               child: ElevatedButton(
-                onPressed: isLoading ? null : loginTeacher,
+                onPressed: isLoading ? null : login,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.transparent,
                   disabledBackgroundColor: Colors.transparent,
@@ -820,36 +832,46 @@ class _LoginScreenState extends State<LoginScreen>
           ),
         ),
         const SizedBox(height: 2),
-        Wrap(
-          crossAxisAlignment: WrapCrossAlignment.center,
-          children: [
-            const Text(
-              'New teacher?',
-              style: TextStyle(fontSize: 12.5, color: muted),
+        if (isParent)
+          const Padding(
+            padding: EdgeInsets.only(top: 8),
+            child: Text(
+              'Parent account is created by the school office.',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 12, color: muted),
             ),
-            TextButton(
-              onPressed: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const RegisterScreen()),
-                );
-              },
-              style: TextButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 6),
-                minimumSize: const Size(0, 30),
-                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          )
+        else
+          Wrap(
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              const Text(
+                'New teacher?',
+                style: TextStyle(fontSize: 12.5, color: muted),
               ),
-              child: const Text(
-                'Create Account',
-                style: TextStyle(
-                  fontSize: 13,
-                  color: primary,
-                  fontWeight: FontWeight.w800,
+              TextButton(
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const RegisterScreen()),
+                  );
+                },
+                style: TextButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                  minimumSize: const Size(0, 30),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                child: const Text(
+                  'Create Account',
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: primary,
+                    fontWeight: FontWeight.w800,
+                  ),
                 ),
               ),
-            ),
-          ],
-        ),
+            ],
+          ),
       ],
     );
   }
@@ -973,6 +995,7 @@ class _BottomWavePainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
+
 
 class _PlaneTrailPainter extends CustomPainter {
   @override
