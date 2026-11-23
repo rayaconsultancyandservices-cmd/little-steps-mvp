@@ -29,6 +29,7 @@ class AdminTeacher {
     required this.employeeId,
     required this.className,
     required this.classId,
+    this.approved = true,
     this.createdAt,
   });
 
@@ -40,6 +41,10 @@ class AdminTeacher {
   final String employeeId;
   final String className;
   final String classId;
+
+  /// false = Admin ने अजून approve केलेलं नाही (Teacher app ला data दिसणार नाही).
+  /// जुन्या teachers मध्ये field नसतो => approved धरतो (Firestore rules प्रमाणेच).
+  final bool approved;
   final DateTime? createdAt;
 
   factory AdminTeacher.fromDoc(QueryDocumentSnapshot<Map<String, dynamic>> d) {
@@ -53,6 +58,7 @@ class AdminTeacher {
       employeeId: _s(x['employeeId']),
       className: _s(x['className']),
       classId: _s(x['classId']),
+      approved: x['approved'] != false,
       createdAt: _date(x['createdAt']),
     );
   }
@@ -173,6 +179,37 @@ class AdminFee {
   }
 }
 
+class AdminReceipt {
+  const AdminReceipt({
+    required this.id,
+    required this.studentId,
+    required this.title,
+    required this.amount,
+    required this.mode,
+    required this.date,
+  });
+
+  final String id;
+  final String studentId;
+  final String title;
+  final int amount;
+  final String mode;
+  final DateTime date;
+
+  factory AdminReceipt.fromDoc(QueryDocumentSnapshot<Map<String, dynamic>> d) {
+    final x = d.data();
+    return AdminReceipt(
+      id: d.id,
+      // path: students/{studentId}/receipts/{id}
+      studentId: d.reference.parent.parent?.id ?? '',
+      title: _s(x['title']),
+      amount: (x['amount'] is num) ? (x['amount'] as num).toInt() : 0,
+      mode: _s(x['mode']),
+      date: _date(x['date']) ?? DateTime.now(),
+    );
+  }
+}
+
 class AdminCircular {
   const AdminCircular({
     required this.id,
@@ -187,6 +224,8 @@ class AdminCircular {
     required this.sentAt,
     required this.readCount,
     required this.ackCount,
+    this.readBy = const [],
+    this.ackedBy = const [],
     this.eventDate,
   });
 
@@ -203,6 +242,10 @@ class AdminCircular {
   final DateTime? eventDate;
   final int readCount;
   final int ackCount;
+
+  /// studentId lists (कोणत्या मुलांच्या parents नी वाचलं / acknowledge केलं)
+  final List<String> readBy;
+  final List<String> ackedBy;
 
   factory AdminCircular.fromDoc(
       QueryDocumentSnapshot<Map<String, dynamic>> d) {
@@ -222,6 +265,12 @@ class AdminCircular {
       eventDate: _date(x['eventDate']),
       readCount: (x['readBy'] is List) ? (x['readBy'] as List).length : 0,
       ackCount: (x['ackedBy'] is List) ? (x['ackedBy'] as List).length : 0,
+      readBy: (x['readBy'] is List)
+          ? [for (final v in x['readBy'] as List) v.toString()]
+          : const [],
+      ackedBy: (x['ackedBy'] is List)
+          ? [for (final v in x['ackedBy'] as List) v.toString()]
+          : const [],
     );
   }
 }
@@ -256,6 +305,154 @@ class AdminEvent {
   }
 }
 
+class AdminDiary {
+  const AdminDiary({
+    required this.id,
+    required this.classId,
+    required this.date,
+    required this.items,
+    required this.mood,
+    required this.homeNote,
+    required this.bring,
+    required this.publishedAt,
+  });
+
+  final String id;
+  final String classId;
+  final DateTime date;
+  final List<DiaryLine> items;
+  final String mood;
+  final String homeNote;
+  final List<String> bring;
+  final DateTime? publishedAt;
+
+  factory AdminDiary.fromDoc(QueryDocumentSnapshot<Map<String, dynamic>> d) {
+    final x = d.data();
+    return AdminDiary(
+      id: d.id,
+      // path: classes/{classId}/diary/{id}
+      classId: d.reference.parent.parent?.id ?? '',
+      date: _date(x['date']) ?? _date(x['publishedAt']) ?? DateTime.now(),
+      items: (x['items'] is List)
+          ? [
+        for (final i in x['items'] as List)
+          if (i is Map) DiaryLine(_s(i['label']), _s(i['text'])),
+      ]
+          : const [],
+      mood: _s(x['mood']),
+      homeNote: _s(x['homeNote']),
+      bring: (x['bring'] is List)
+          ? [for (final b in x['bring'] as List) b.toString()]
+          : const [],
+      publishedAt: _date(x['publishedAt']),
+    );
+  }
+}
+
+class AdminPhoto {
+  const AdminPhoto({
+    required this.id,
+    required this.classId,
+    required this.batchId,
+    required this.url,
+    required this.caption,
+    required this.wholeClass,
+    required this.tags,
+    required this.audience,
+    required this.sentAt,
+  });
+
+  final String id;
+  final String classId;
+  final String batchId;
+  final String url;
+  final String caption;
+  final bool wholeClass;
+  final List<String> tags;
+  final List<String> audience;
+  final DateTime sentAt;
+
+  factory AdminPhoto.fromDoc(QueryDocumentSnapshot<Map<String, dynamic>> d) {
+    final x = d.data();
+    List<String> strs(dynamic v) =>
+        (v is List) ? [for (final e in v) e.toString()] : const [];
+    return AdminPhoto(
+      id: d.id,
+      // path: classes/{classId}/photos/{id}
+      classId: d.reference.parent.parent?.id ?? _s(x['classId']),
+      batchId: _s(x['batchId']),
+      url: _s(x['url']),
+      caption: _s(x['caption']),
+      wholeClass: x['wholeClass'] == true,
+      tags: strs(x['tags']),
+      audience: strs(x['audience']),
+      sentAt: _date(x['sentAt']) ?? DateTime.now(),
+    );
+  }
+}
+
+/// Teacher ↔ Parent chat thread (document id = studentId).
+class AdminThread {
+  const AdminThread({
+    required this.studentId,
+    required this.classId,
+    required this.studentName,
+    required this.parentName,
+    required this.lastText,
+    required this.lastAt,
+    required this.teacherUnread,
+    required this.parentUnread,
+  });
+
+  final String studentId;
+  final String classId;
+  final String studentName;
+  final String parentName;
+  final String lastText;
+  final DateTime? lastAt;
+  final int teacherUnread;
+  final int parentUnread;
+
+  factory AdminThread.fromDoc(QueryDocumentSnapshot<Map<String, dynamic>> d) {
+    final x = d.data();
+    int n(dynamic v) => (v is num) ? v.toInt() : 0;
+    return AdminThread(
+      studentId: d.id,
+      classId: _s(x['classId']),
+      studentName: _s(x['studentName']),
+      parentName: _s(x['parentName']),
+      lastText: _s(x['lastText']),
+      lastAt: _date(x['lastAt']),
+      teacherUnread: n(x['teacherUnread']),
+      parentUnread: n(x['parentUnread']),
+    );
+  }
+}
+
+class AdminMessage {
+  const AdminMessage({
+    required this.id,
+    required this.text,
+    required this.fromTeacher,
+    required this.at,
+  });
+
+  final String id;
+  final String text;
+  final bool fromTeacher;
+  final DateTime? at;
+
+  factory AdminMessage.fromDoc(QueryDocumentSnapshot<Map<String, dynamic>> d) {
+    final x = d.data();
+    return AdminMessage(
+      id: d.id,
+      text: _s(x['text']),
+      fromTeacher: x['fromTeacher'] == true,
+      at: _date(x['at']),
+    );
+  }
+}
+
 // =====================================================================
 // ADMIN STATE
 // ---------------------------------------------------------------------
@@ -286,9 +483,31 @@ class AdminState extends ChangeNotifier {
   List<ChildInfo> students = [];
   List<AdminClass> classes = [];
   List<AttendanceRec> attendance = [];
-  List<AdminFee> fees = [];
+  List<AdminFee> _allFees = [];
+  List<AdminReceipt> _allReceipts = [];
+  bool _studentsLoaded = false;
   List<AdminCircular> circulars = [];
   List<AdminEvent> events = [];
+  List<AdminDiary> diaries = [];
+  List<AdminPhoto> photos = [];
+  List<AdminThread> threads = [];
+
+  /// Fees / receipts फक्त अस्तित्वात असलेल्या students चे (delete केलेल्या मुलांचे
+  /// उरलेले जुने records totals मध्ये मोजले जाऊ नयेत म्हणून).
+  List<AdminFee> get fees {
+    if (!_studentsLoaded) return _allFees;
+    final ids = students.map((s) => s.id).toSet();
+    return _allFees.where((f) => ids.contains(f.studentId)).toList();
+  }
+
+  List<AdminReceipt> get receipts {
+    if (!_studentsLoaded) return _allReceipts;
+    final ids = students.map((s) => s.id).toSet();
+    return _allReceipts.where((r) => ids.contains(r.studentId)).toList();
+  }
+
+  /// Screens मध्ये `$e` ऐवजी हा वापरा (वाचता येणारा error text).
+  static String errorText(Object e) => _authMessage(e);
 
   // =================================================================
   // AUTH / SESSION
@@ -384,9 +603,14 @@ class AdminState extends ChangeNotifier {
     students = [];
     classes = [];
     attendance = [];
-    fees = [];
+    _allFees = [];
+    _allReceipts = [];
+    _studentsLoaded = false;
     circulars = [];
     events = [];
+    diaries = [];
+    photos = [];
+    threads = [];
     notifyListeners();
   }
 
@@ -426,6 +650,7 @@ class AdminState extends ChangeNotifier {
         });
 
     _listen(_db.collection('students'), (snap) {
+      _studentsLoaded = true;
       students = [
         for (final d in snap.docs) ChildInfo.fromMap(d.id, d.data()),
       ]..sort((a, b) {
@@ -461,8 +686,13 @@ class AdminState extends ChangeNotifier {
     );
 
     // Collection-group queries: सर्व classes / students चे subcollections
+    _listen(_db.collectionGroup('receipts'), (snap) {
+      _allReceipts = [for (final d in snap.docs) AdminReceipt.fromDoc(d)]
+        ..sort((a, b) => b.date.compareTo(a.date));
+    });
+
     _listen(_db.collectionGroup('fees'), (snap) {
-      fees = [for (final d in snap.docs) AdminFee.fromDoc(d)]
+      _allFees = [for (final d in snap.docs) AdminFee.fromDoc(d)]
         ..sort((a, b) {
           final da = a.dueDate;
           final db = b.dueDate;
@@ -481,6 +711,30 @@ class AdminState extends ChangeNotifier {
     _listen(_db.collectionGroup('events'), (snap) {
       events = [for (final d in snap.docs) AdminEvent.fromDoc(d)]
         ..sort((a, b) => a.date.compareTo(b.date));
+    });
+
+    _listen(_db.collectionGroup('diary'), (snap) {
+      diaries = [for (final d in snap.docs) AdminDiary.fromDoc(d)]
+        ..sort((a, b) => b.date.compareTo(a.date));
+    });
+
+    _listen(_db.collectionGroup('photos'), (snap) {
+      photos = [for (final d in snap.docs) AdminPhoto.fromDoc(d)]
+        ..sort((a, b) => b.sentAt.compareTo(a.sentAt));
+    });
+
+    _listen(_db.collection('threads'), (snap) {
+      threads = [
+        for (final d in snap.docs) AdminThread.fromDoc(d),
+      ].where((t) => t.lastText.isNotEmpty).toList()
+        ..sort((a, b) {
+          final ta = a.lastAt;
+          final tb = b.lastAt;
+          if (ta == null && tb == null) return 0;
+          if (ta == null) return 1;
+          if (tb == null) return -1;
+          return tb.compareTo(ta);
+        });
     });
   }
 
@@ -523,6 +777,18 @@ class AdminState extends ChangeNotifier {
         (mail.isNotEmpty && p.email.trim().toLowerCase() == mail));
   }
 
+  AdminParentUser? parentUserOf(ChildInfo s) {
+    final mail = s.parentEmail.trim().toLowerCase();
+    for (final p in parentUsers) {
+      if (p.studentId == s.id) return p;
+    }
+    if (mail.isEmpty) return null;
+    for (final p in parentUsers) {
+      if (p.email.trim().toLowerCase() == mail) return p;
+    }
+    return null;
+  }
+
   int get parentsJoinedCount => students.where(parentJoined).length;
 
   // ---------- attendance ----------
@@ -557,6 +823,9 @@ class AdminState extends ChangeNotifier {
       .where((f) => f.status == FeeStatus.paid)
       .fold<int>(0, (sum, f) => sum + f.amount);
 
+  int get receiptsTotal =>
+      receipts.fold<int>(0, (sum, r) => sum + r.amount);
+
   int get studentsWithDues => fees
       .where((f) => f.status == FeeStatus.due)
       .map((f) => f.studentId)
@@ -575,8 +844,29 @@ class AdminState extends ChangeNotifier {
     return id;
   }
 
-  Future<void> deleteClass(String classId) =>
-      _db.collection('classes').doc(classId).delete();
+  /// Firestore मध्ये document delete केला तरी त्याचे subcollections राहतात.
+  /// म्हणून class च्या diary / photos / circulars / events सुद्धा काढतो.
+  Future<void> deleteClass(String classId) async {
+    final cRef = _db.collection('classes').doc(classId);
+    final refs = <DocumentReference>[];
+    for (final sub in const ['diary', 'photos', 'circulars', 'events']) {
+      final q = await cRef.collection(sub).get();
+      refs.addAll(q.docs.map((d) => d.reference));
+    }
+    refs.add(cRef);
+    await _deleteDocs(refs);
+  }
+
+  /// 400-400 च्या batches मध्ये delete (Firestore batch limit 500).
+  Future<void> _deleteDocs(List<DocumentReference> refs) async {
+    for (var i = 0; i < refs.length; i += 400) {
+      final batch = _db.batch();
+      for (final r in refs.skip(i).take(400)) {
+        batch.delete(r);
+      }
+      await batch.commit();
+    }
+  }
 
   // =================================================================
   // TEACHER ACTIONS
@@ -584,6 +874,17 @@ class AdminState extends ChangeNotifier {
   /// Teacher ला class assign करतो (users + classes दोन्ही update).
   Future<void> assignTeacher(AdminTeacher t, AdminClass c) async {
     final batch = _db.batch();
+    // आधीच्या class वर याच teacher चं नाव राहू नये.
+    if (t.classId.isNotEmpty && t.classId != c.id) {
+      final old = classes.where((x) => x.id == t.classId).toList();
+      if (old.isNotEmpty && old.first.teacherUid == t.uid) {
+        batch.set(
+          _db.collection('classes').doc(old.first.id),
+          {'teacherName': '', 'teacherUid': ''},
+          SetOptions(merge: true),
+        );
+      }
+    }
     batch.update(_db.collection('users').doc(t.uid), {
       'className': c.className,
       'classId': c.id,
@@ -599,6 +900,26 @@ class AdminState extends ChangeNotifier {
       },
       SetOptions(merge: true),
     );
+    await batch.commit();
+  }
+
+  /// Teacher approve / revoke. Approve होईपर्यंत Teacher app मध्ये data दिसत नाही.
+  Future<void> setTeacherApproved(AdminTeacher t, bool approved) async {
+    final batch = _db.batch();
+    batch.update(_db.collection('users').doc(t.uid), {'approved': approved});
+    // Approve करताना त्याच्या class चा document तयार (नसल्यास) – Parent app ला teacher नाव दिसतं.
+    if (approved && t.classId.isNotEmpty) {
+      batch.set(
+        _db.collection('classes').doc(t.classId),
+        {
+          'teacherName': t.name,
+          'teacherUid': t.uid,
+          'className': t.className,
+          'schoolName': t.schoolName,
+        },
+        SetOptions(merge: true),
+      );
+    }
     await batch.commit();
   }
 
@@ -628,16 +949,110 @@ class AdminState extends ChangeNotifier {
     return max + 1;
   }
 
-  Future<void> saveStudent(ChildInfo s, {bool isNew = false}) async {
+  /// `previous` = edit करण्यापूर्वीचा student. त्यावरून:
+  ///  - parent email बदलला => जुना parent link तोडतो (जुन्या parent ला access जातो)
+  ///  - class बदलली => parent चा users.classId + chat thread चा classId update
+  ///    (नाहीतर Firestore rules मुळे parent ला नवीन class चा data दिसत नाही).
+  Future<void> saveStudent(ChildInfo s,
+      {bool isNew = false, ChildInfo? previous}) async {
     if (isNew) {
       await _db.collection('students').add(s.toMap());
-    } else {
-      await _db.collection('students').doc(s.id).update(s.toMap());
+      return;
+    }
+    await _db.collection('students').doc(s.id).update(s.toMap());
+    if (previous == null) return;
+
+    final oldMail = previous.parentEmail.trim().toLowerCase();
+    final newMail = s.parentEmail.trim().toLowerCase();
+    final linked = await _db
+        .collection('users')
+        .where('studentId', isEqualTo: s.id)
+        .get();
+
+    if (oldMail != newMail) {
+      await _deleteDocs([for (final d in linked.docs) d.reference]);
+    } else if (previous.classId != s.classId) {
+      final batch = _db.batch();
+      for (final d in linked.docs) {
+        batch.update(d.reference, {'classId': s.classId});
+      }
+      await batch.commit();
+    }
+
+    if (previous.classId != s.classId) {
+      await _db.collection('threads').doc(s.id).set(
+        {'classId': s.classId, 'studentName': s.name, 'parentName': s.parentName},
+        SetOptions(merge: true),
+      );
     }
   }
 
-  Future<void> deleteStudent(String id) =>
-      _db.collection('students').doc(id).delete();
+  /// Student + त्याचा सगळा संबंधित data (fees, receipts, attendance, chat,
+  /// parent login profile) एकत्र काढतो, म्हणजे totals / dashboard चुकत नाहीत.
+  Future<void> deleteStudent(String id) async {
+    final sRef = _db.collection('students').doc(id);
+    final tRef = _db.collection('threads').doc(id);
+    final refs = <DocumentReference>[];
+
+    for (final sub in const ['fees', 'receipts']) {
+      final q = await sRef.collection(sub).get();
+      refs.addAll(q.docs.map((d) => d.reference));
+    }
+    final att = await _db
+        .collection('attendance')
+        .where('studentId', isEqualTo: id)
+        .get();
+    refs.addAll(att.docs.map((d) => d.reference));
+
+    final msgs = await tRef.collection('messages').get();
+    refs.addAll(msgs.docs.map((d) => d.reference));
+    refs.add(tRef);
+
+    final parents = await _db
+        .collection('users')
+        .where('studentId', isEqualTo: id)
+        .get();
+    refs.addAll(parents.docs.map((d) => d.reference));
+
+    refs.add(sRef); // शेवटी student, म्हणजे मध्येच fail झालं तरी retry करता येतो
+    await _deleteDocs(refs);
+  }
+
+  // =================================================================
+  // PARENT ACTIONS
+  // =================================================================
+  /// Parent चं login profile काढतो; पुढच्या login ला email जुळला तर आपोआप परत link होतो.
+  Future<void> unlinkParent(AdminParentUser p) =>
+      _db.collection('users').doc(p.uid).delete();
+
+  Future<String?> sendPasswordReset(String email) =>
+      AuthService.resetPassword(email);
+
+  // =================================================================
+  // ATTENDANCE ACTIONS (Admin दुरुस्ती)
+  // =================================================================
+  /// Teacher च्या app प्रमाणेच document id ('{day}_{studentId}') वापरतो,
+  /// म्हणून Teacher + Parent दोघांना बदल लगेच दिसतो.
+  Future<void> setAttendance({
+    required String classId,
+    required String studentId,
+    required String day,
+    required String status,
+    String reason = '',
+  }) async {
+    final d = DateTime.parse(day);
+    await _db.collection('attendance').doc('${day}_$studentId').set({
+      'classId': classId,
+      'studentId': studentId,
+      'day': day,
+      'week': AppState.weekKey(d),
+      'status': status,
+      'reason': status == 'P' ? '' : reason.trim(),
+      'savedBy': uid,
+      'savedAt': Timestamp.fromDate(DateTime.now()),
+      'editedByAdmin': true,
+    });
+  }
 
   // =================================================================
   // FEE ACTIONS
@@ -666,6 +1081,26 @@ class AdminState extends ChangeNotifier {
       await batch.commit();
     }
   }
+
+  /// Paid नसलेली fee edit (title / amount / due date / upcoming-due).
+  Future<void> updateFee(
+      AdminFee fee, {
+        required String title,
+        required int amount,
+        DateTime? dueDate,
+        required bool upcoming,
+      }) =>
+      _db
+          .collection('students')
+          .doc(fee.studentId)
+          .collection('fees')
+          .doc(fee.id)
+          .update({
+        'title': title.trim(),
+        'amount': amount,
+        'dueDate': dueDate == null ? null : Timestamp.fromDate(dueDate),
+        'status': upcoming ? 'upcoming' : 'due',
+      });
 
   Future<void> markFeePaid(AdminFee fee, String mode) async {
     final ref = _db.collection('students').doc(fee.studentId);
@@ -760,4 +1195,154 @@ class AdminState extends ChangeNotifier {
       .collection('events')
       .doc(e.id)
       .delete();
+
+  // =================================================================
+  // EXTRA READ HELPERS (dashboard / diary / photos / chat)
+  // =================================================================
+  int get pendingTeachersCount => teachers.where((t) => !t.approved).length;
+
+  /// आज diary publish केलेल्या classes.
+  Set<String> get classesWithDiaryToday {
+    final t = DateTime.now();
+    return diaries
+        .where((d) => AppState.sameDay(d.date, t))
+        .map((d) => d.classId)
+        .toSet();
+  }
+
+  int get photosTodayCount {
+    final t = DateTime.now();
+    return photos.where((p) => AppState.sameDay(p.sentAt, t)).length;
+  }
+
+  /// Teacher ने उत्तर न दिलेले (unread) parent messages.
+  int get teacherUnreadTotal =>
+      threads.fold<int>(0, (n, t) => n + t.teacherUnread);
+
+  // =================================================================
+  // TEACHER EDIT
+  // =================================================================
+  Future<void> updateTeacher(
+      AdminTeacher t, {
+        required String name,
+        required String phone,
+        required String employeeId,
+        required String schoolName,
+      }) async {
+    final batch = _db.batch();
+    batch.update(_db.collection('users').doc(t.uid), {
+      'name': name.trim(),
+      'phone': phone.trim(),
+      'employeeId': employeeId.trim(),
+      'schoolName': schoolName.trim(),
+    });
+    if (t.classId.isNotEmpty) {
+      final cls = classes.where((c) => c.id == t.classId).toList();
+      // class card वरचं नाव फक्त याच teacher चं असेल तरच बदलतो.
+      if (cls.isNotEmpty && cls.first.teacherUid == t.uid) {
+        batch.set(
+          _db.collection('classes').doc(t.classId),
+          {'teacherName': name.trim()},
+          SetOptions(merge: true),
+        );
+      }
+    }
+    await batch.commit();
+  }
+
+  // =================================================================
+  // CIRCULAR / EVENT EDIT
+  // =================================================================
+  Future<void> updateCircular(
+      AdminCircular c, {
+        required String title,
+        required String message,
+        required String category,
+        required bool important,
+        required bool needsAck,
+        DateTime? eventDate,
+      }) =>
+      _db
+          .collection('classes')
+          .doc(c.classId)
+          .collection('circulars')
+          .doc(c.id)
+          .update({
+        'title': title.trim(),
+        'message': message.trim(),
+        'category': category,
+        'important': important,
+        'needsAck': needsAck,
+        'eventDate': eventDate == null ? null : Timestamp.fromDate(eventDate),
+        'editedByAdmin': true,
+      });
+
+  Future<void> updateEvent(
+      AdminEvent e, {
+        required String title,
+        required String category,
+        required DateTime date,
+        String note = '',
+      }) =>
+      _db
+          .collection('classes')
+          .doc(e.classId)
+          .collection('events')
+          .doc(e.id)
+          .update({
+        'title': title.trim(),
+        'category': category,
+        'date': Timestamp.fromDate(DateTime(date.year, date.month, date.day)),
+        'note': note.trim(),
+      });
+
+  // =================================================================
+  // DIARY / PHOTOS / CHAT ACTIONS
+  // =================================================================
+  Future<void> deleteDiary(AdminDiary d) => _db
+      .collection('classes')
+      .doc(d.classId)
+      .collection('diary')
+      .doc(d.id)
+      .delete();
+
+  /// एका photo batch (किंवा एकच photo) चे सर्व documents काढतो.
+  Future<void> deletePhotos(List<AdminPhoto> list) => _deleteDocs([
+    for (final p in list)
+      _db
+          .collection('classes')
+          .doc(p.classId)
+          .collection('photos')
+          .doc(p.id),
+  ]);
+
+  Future<void> deleteMessage(String studentId, String messageId) => _db
+      .collection('threads')
+      .doc(studentId)
+      .collection('messages')
+      .doc(messageId)
+      .delete();
+
+  /// Conversation चे सर्व messages + thread काढतो.
+  Future<void> clearThread(String studentId) async {
+    final tRef = _db.collection('threads').doc(studentId);
+    final msgs = await tRef.collection('messages').get();
+    await _deleteDocs([...msgs.docs.map((d) => d.reference), tRef]);
+  }
+
+  // =================================================================
+  // ADMIN PROFILE
+  // =================================================================
+  Future<void> updateAdminProfile({
+    required String name,
+    required String school,
+  }) async {
+    await _db.collection('users').doc(uid).update({
+      'name': name.trim(),
+      'schoolName': school.trim(),
+    });
+    adminName = name.trim().isEmpty ? 'Admin' : name.trim();
+    schoolName = school.trim();
+    notifyListeners();
+  }
 }

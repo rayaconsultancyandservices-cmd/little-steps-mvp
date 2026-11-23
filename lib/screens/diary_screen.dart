@@ -271,22 +271,30 @@ class _DiaryScreenState extends State<DiaryScreen> {
     final wasPublished = _published;
 
     setState(() => _isPublishing = true);
-    await Future<void>.delayed(const Duration(milliseconds: 450));
-    if (!mounted) return;
 
     // FIX 3: Teacher ने भरलेला खरा diary मजकूर AppState ला पाठवला जातो.
     // - items: फक्त भरलेल्या (रिकाम्या नसलेल्या) ओळी
     // - mood, homeNote, bring: Parent ला "Practice at home" आणि "Please send tomorrow" साठी
-    AppState.instance.publishDiary(
-      items: [
-        for (final item in _items)
-          if (item.controller.text.trim().isNotEmpty)
-            DiaryLine(item.label, item.controller.text.trim()),
-      ],
-      mood: _mood,
-      homeNote: _homeNote.text.trim(),
-      bring: _bring.toList(),
-    );
+    try {
+      await AppState.instance
+          .publishDiary(
+        items: [
+          for (final item in _items)
+            if (item.controller.text.trim().isNotEmpty)
+              DiaryLine(item.label, item.controller.text.trim()),
+        ],
+        mood: _mood,
+        homeNote: _homeNote.text.trim(),
+        bring: _bring.toList(),
+      )
+          .timeout(const Duration(seconds: 30));
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isPublishing = false);
+      _showMessage('Could not publish diary: $e');
+      return;
+    }
+    if (!mounted) return;
 
     setState(() {
       _isPublishing = false;

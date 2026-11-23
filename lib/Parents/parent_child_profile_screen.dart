@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../state/app_state.dart';
 import '../theme/app_colors.dart';
@@ -486,16 +487,28 @@ class ParentChildProfileScreen extends StatelessWidget {
               ],
             ),
           ),
-          // url_launcher जोडल्यावर इथे खरा call लावता येईल.
+          // Tap = खरा phone call, long-press = number copy.
           GestureDetector(
             onTap: () async {
+              final digits = p.phone.replaceAll(RegExp(r'[^0-9+]'), '');
+              final ok = digits.isNotEmpty &&
+                  await launchUrl(Uri(scheme: 'tel', path: digits));
+              if (!ok && context.mounted) {
+                await Clipboard.setData(ClipboardData(text: p.phone));
+                if (context.mounted) {
+                  showSnack(context,
+                      'Could not open the dialer. Number copied: ${p.phone}');
+                }
+              }
+            },
+            onLongPress: () async {
               await Clipboard.setData(ClipboardData(text: p.phone));
               if (context.mounted) {
                 showSnack(context, '${p.name}’s number copied: ${p.phone}');
               }
             },
             child: Tooltip(
-              message: 'Copy number',
+              message: 'Call (long-press to copy)',
               child: Container(
                 width: 38,
                 height: 38,
@@ -585,75 +598,13 @@ class ParentChildProfileScreen extends StatelessWidget {
   void _requestChange(BuildContext context) {
     showModalBottomSheet<void>(
       context: context,
+      isScrollControlled: true,
       backgroundColor: Colors.white,
       showDragHandle: true,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
-      builder: (ctx) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text('Request a change',
-                  style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w900,
-                      color: ParentColors.dark)),
-              const SizedBox(height: 8),
-              const Text(
-                'Profile changes are approved by the school office. '
-                    'Tell the class teacher or visit the office to update:',
-                style: TextStyle(
-                    fontSize: 12.5, height: 1.5, color: ParentColors.muted),
-              ),
-              const SizedBox(height: 12),
-              for (final t in const [
-                'Phone numbers and emergency contacts',
-                'Allergies and health information',
-                'Authorised pickup persons',
-                'Name or date of birth corrections',
-              ])
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 4),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.check_circle_rounded,
-                          size: 16, color: ParentColors.primary),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(t,
-                            style: const TextStyle(
-                                fontSize: 12.5,
-                                fontWeight: FontWeight.w600,
-                                color: ParentColors.dark)),
-                      ),
-                    ],
-                  ),
-                ),
-              const SizedBox(height: 16),
-              SizedBox(
-                width: double.infinity,
-                height: 46,
-                child: ElevatedButton(
-                  onPressed: () => Navigator.pop(ctx),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: ParentColors.primary,
-                    foregroundColor: Colors.white,
-                    elevation: 0,
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14)),
-                    textStyle: const TextStyle(fontWeight: FontWeight.w800),
-                  ),
-                  child: const Text('Got it'),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
+      builder: (ctx) => const _ChangeRequestSheet(),
     );
   }
 
@@ -715,4 +666,134 @@ class ParentChildProfileScreen extends StatelessWidget {
       ),
     ],
   );
+}
+
+/// "Request a change" — आता खरंच class teacher ला chat मध्ये message म्हणून जातं.
+class _ChangeRequestSheet extends StatefulWidget {
+  const _ChangeRequestSheet();
+
+  @override
+  State<_ChangeRequestSheet> createState() => _ChangeRequestSheetState();
+}
+
+class _ChangeRequestSheetState extends State<_ChangeRequestSheet> {
+  final _text = TextEditingController();
+  bool _sending = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _text.addListener(() => setState(() {}));
+  }
+
+  @override
+  void dispose() {
+    _text.dispose();
+    super.dispose();
+  }
+
+  Future<void> _send() async {
+    final msg = _text.text.trim();
+    if (msg.isEmpty || _sending) return;
+    final s = AppState.instance;
+    setState(() => _sending = true);
+    try {
+      await s.sendMessage(
+        s.child.id,
+        'Profile change request for ${s.child.name}:\n$msg',
+        fromTeacher: false,
+      );
+      if (!mounted) return;
+      Navigator.pop(context);
+      showSnack(context, 'Request sent to the class teacher');
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _sending = false);
+      showSnack(context, 'Could not send. Please check your internet.');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(
+            20, 4, 20, 20 + MediaQuery.of(context).viewInsets.bottom),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Request a change',
+                style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w900,
+                    color: ParentColors.dark)),
+            const SizedBox(height: 8),
+            const Text(
+              'Profile changes are approved by the school office. '
+                  'Tell us what to update:',
+              style: TextStyle(
+                  fontSize: 12.5, height: 1.5, color: ParentColors.muted),
+            ),
+            const SizedBox(height: 12),
+            for (final t in const [
+              'Phone numbers and emergency contacts',
+              'Allergies and health information',
+              'Authorised pickup persons',
+              'Name or date of birth corrections',
+            ])
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: Row(
+                  children: [
+                    const Icon(Icons.check_circle_rounded,
+                        size: 16, color: ParentColors.primary),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(t,
+                          style: const TextStyle(
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w600,
+                              color: ParentColors.dark)),
+                    ),
+                  ],
+                ),
+              ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: _text,
+              maxLines: 3,
+              textCapitalization: TextCapitalization.sentences,
+              decoration: InputDecoration(
+                hintText: 'e.g. New emergency number: 98xxxxxxxx',
+                filled: true,
+                fillColor: ParentColors.tint,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(14),
+                  borderSide: BorderSide.none,
+                ),
+              ),
+            ),
+            const SizedBox(height: 14),
+            SizedBox(
+              width: double.infinity,
+              height: 46,
+              child: ElevatedButton(
+                onPressed: (_text.text.trim().isEmpty || _sending) ? null : _send,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: ParentColors.primary,
+                  foregroundColor: Colors.white,
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14)),
+                  textStyle: const TextStyle(fontWeight: FontWeight.w800),
+                ),
+                child: Text(_sending ? 'Sending…' : 'Send to class teacher'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }

@@ -15,6 +15,14 @@ dependencies:
   firebase_core: ^5.2.0
   cloud_firestore: ^7.2.0
   firebase_auth: ^7.1.0
+  # Teacher: real photos + circular attachments upload.
+  # `any` वापरलंय म्हणजे firebase_core ^5 शी जुळणारी version आपोआप निवडली जाते.
+  # नंतर `flutter pub add firebase_storage` चालवलंत तर ती exact version पिन होते.
+  firebase_storage: any
+  image_picker: ^1.1.2          # Teacher: Camera / Gallery photos
+  file_picker: ^10.3.0          # Teacher: circular PDF / image attachment
+  shared_preferences: ^2.3.2   # Parent: remember-me, notification read, favourites, diary ticks
+  url_launcher: ^6.3.1         # Parent: phone call + circular attachment open
 
 dev_dependencies:
   flutter_test:

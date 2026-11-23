@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../state/app_state.dart';
 import '../widgets/parent_widgets.dart';
+import 'parent_attendance_screen.dart';
 import 'parent_calendar_screen.dart';
 import 'parent_child_profile_screen.dart';
 import 'parent_message_screen.dart';
@@ -67,7 +68,7 @@ class ParentHomeScreen extends StatefulWidget {
     required this.onLogout,
   });
 
-  final ValueChanged<int> onNavigate; // 0 Home, 1 Photos, 2 Diary, 3 Circulars, 4 Fees
+  final ValueChanged<int> onNavigate; // 0 Home, 1 Photos, 2 Diary, 3 Circulars, 4 Fees, 5 Messages
   final VoidCallback onLogout;
 
   @override
@@ -88,6 +89,7 @@ class _ParentHomeScreenState extends State<ParentHomeScreen>
       duration: const Duration(milliseconds: 1500),
       animationBehavior: AnimationBehavior.preserve,
     )..forward();
+    _loadNotifs();
   }
 
   @override
@@ -96,8 +98,17 @@ class _ParentHomeScreenState extends State<ParentHomeScreen>
     super.dispose();
   }
 
-  void _push(BuildContext context, Widget page) {
-    Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => page));
+  Future<void> _push(BuildContext context, Widget page) {
+    return Navigator.of(context)
+        .push(MaterialPageRoute<void>(builder: (_) => page));
+  }
+
+  /// Notification screen मध्ये read / clear केलेल्या (फोन मध्ये save केलेल्या) बाबी.
+  Set<String> _hiddenNotifs = {};
+
+  Future<void> _loadNotifs() async {
+    final h = await ParentNotifStore.hidden(AppState.instance.child.id);
+    if (mounted) setState(() => _hiddenNotifs = h);
   }
 
   // ---------------------------------------------------------------
@@ -121,14 +132,17 @@ class _ParentHomeScreenState extends State<ParentHomeScreen>
             .where((e) => !e.date.isBefore(today))
             .take(3)
             .toList();
-        final msgs = s.thread(s.child.parentName);
+        final msgs = s.thread(s.child.id);
         final lastMsg = msgs.isEmpty ? null : msgs.last;
 
         final sections = <Widget>[
           _header(context, s, notifs),
-          _heroCard(s),
+          _Tap(
+            onTap: () => _push(context, const ParentAttendanceScreen()),
+            child: _heroCard(s),
+          ),
           _glance(s, todayPhotos.length, post != null),
-          _quickActions(context, due != null),
+          _quickActions(context, due != null, s.unreadMessages > 0),
           if (s.pendingAckCount > 0) _ackBanner(s.pendingAckCount),
           if (due != null) _feeBanner(due, today),
           _photosCard(s, todayPhotos),
@@ -162,25 +176,59 @@ class _ParentHomeScreenState extends State<ParentHomeScreen>
   // ---------------------------------------------------------------
   List<ParentNotifItem> _notifs(AppState s) {
     final now = DateTime.now();
+    final ymd = AppState.dayKey(now);
     final out = <ParentNotifItem>[];
-    if (s.diaryFor(now) != null) {
-      out.add(const ParentNotifItem(
-          Icons.menu_book_rounded, 'Today’s class diary is published.', 2));
+
+    // Teacher चे न वाचलेले messages (आधी notifications मध्ये येत नव्हते).
+    final unreadMsgs = s.unreadMessages;
+    if (unreadMsgs > 0) {
+      final msgs = s.thread(s.child.id);
+      final lastId = msgs.isEmpty ? '' : msgs.last.id;
+      out.add(ParentNotifItem(
+        Icons.chat_bubble_rounded,
+        unreadMsgs == 1
+            ? 'You have 1 new message from the teacher.'
+            : 'You have $unreadMsgs new messages from the teacher.',
+        5,
+        key: 'msg_$lastId',
+      ));
     }
-    if (s.childPhotosOn(now).isNotEmpty) {
-      out.add(ParentNotifItem(Icons.photo_library_rounded,
-          'New photos of ${s.child.firstName} were shared.', 1));
+    if (s.diaryFor(now) != null) {
+      out.add(ParentNotifItem(
+        Icons.menu_book_rounded,
+        'Today’s class diary is published.',
+        2,
+        key: 'diary_$ymd',
+      ));
+    }
+    final photoCount = s.childPhotosOn(now).length;
+    if (photoCount > 0) {
+      out.add(ParentNotifItem(
+        Icons.photo_library_rounded,
+        'New photos of ${s.child.firstName} were shared.',
+        1,
+        key: 'photos_${ymd}_$photoCount',
+      ));
     }
     for (final c in s.visibleCirculars.where(s.isNewCircular).take(3)) {
-      out.add(ParentNotifItem(Icons.campaign_rounded, 'New circular: ${c.title}', 3));
+      out.add(ParentNotifItem(
+        Icons.campaign_rounded,
+        'New circular: ${c.title}',
+        3,
+        key: 'circ_${c.id.isEmpty ? c.title : c.id}',
+      ));
     }
     final due = s.nextDueFee;
     if (due != null) {
       final date = due.dueDate == null
           ? ''
           : ' due by ${AppState.shortDate(due.dueDate!)}';
-      out.add(ParentNotifItem(Icons.currency_rupee_rounded,
-          '${due.title} ${rupees(due.amount)}$date.', 4));
+      out.add(ParentNotifItem(
+        Icons.currency_rupee_rounded,
+        '${due.title} ${rupees(due.amount)}$date.',
+        4,
+        key: 'fee_${due.id.isEmpty ? due.title : due.id}',
+      ));
     }
     return out;
   }
@@ -368,14 +416,14 @@ class _ParentHomeScreenState extends State<ParentHomeScreen>
         ),
         _RoundButton(
           icon: Icons.notifications_none_rounded,
-          badge: notifs.length,
+          badge: notifs.where((n) => !_hiddenNotifs.contains(n.key)).length,
           onTap: () => _push(
             context,
             ParentNotificationScreen(
               items: notifs,
               onOpenTab: widget.onNavigate,
             ),
-          ),
+          ).then((_) => _loadNotifs()),
         ),
         const SizedBox(width: 8),
         _RoundButton(
@@ -660,7 +708,7 @@ class _ParentHomeScreenState extends State<ParentHomeScreen>
   // ---------------------------------------------------------------
   // 4. QUICK ACTIONS
   // ---------------------------------------------------------------
-  Widget _quickActions(BuildContext context, bool feeDue) {
+  Widget _quickActions(BuildContext context, bool feeDue, bool msgUnread) {
     Widget item(IconData icon, String label, VoidCallback onTap,
         {bool dot = false}) {
       return Expanded(
@@ -723,7 +771,8 @@ class _ParentHomeScreenState extends State<ParentHomeScreen>
                 () => _push(context, const ParentCalendarScreen())),
         const SizedBox(width: 8),
         item(Icons.chat_bubble_rounded, 'Message',
-                () => _push(context, const ParentMessageScreen())),
+                () => _push(context, const ParentMessageScreen()),
+            dot: msgUnread),
         const SizedBox(width: 8),
         item(Icons.person_rounded, 'Profile',
                 () => _push(context, const ParentChildProfileScreen())),

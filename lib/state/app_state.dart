@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/foundation.dart';
 
 // =====================================================================
@@ -28,6 +30,7 @@ class CircularRecord {
     required this.sentAt,
     this.eventDate,
     this.attachment,
+    this.attachmentUrl,
     this.message = '',
     this.important = false,
     this.scheduledFor,
@@ -44,6 +47,9 @@ class CircularRecord {
   final DateTime sentAt;
   final DateTime? eventDate;
   final String? attachment;
+
+  /// Firebase Storage चा download link (नसेल तर parent ला फक्त नाव दिसतं).
+  final String? attachmentUrl;
   final String message;
   final bool important;
   final DateTime? scheduledFor;
@@ -74,6 +80,7 @@ class CircularRecord {
       sentAt: _dt(d['sentAt']) ?? DateTime.now(),
       eventDate: _dt(d['eventDate']),
       attachment: d['attachment'] as String?,
+      attachmentUrl: d['attachmentUrl'] as String?,
       message: (d['message'] ?? '') as String,
       important: (d['important'] ?? false) as bool,
       scheduledFor: _dt(d['scheduledFor']),
@@ -91,6 +98,7 @@ class CircularRecord {
     'sentAt': Timestamp.fromDate(sentAt),
     'eventDate': eventDate == null ? null : Timestamp.fromDate(eventDate!),
     'attachment': attachment,
+    'attachmentUrl': attachmentUrl,
     'message': message,
     'important': important,
     'scheduledFor':
@@ -102,10 +110,13 @@ class CircularRecord {
 }
 
 class SharedPhoto {
-  const SharedPhoto(this.colorIndex, this.tags, {this.url});
+  const SharedPhoto(this.colorIndex, this.tags, {this.url, this.bytes});
   final int colorIndex;
   final List<String> tags; // tagged children ची नावे
-  final String? url; // Firebase Storage URL (photos step मध्ये वापरणार)
+  final String? url; // Firebase Storage download URL
+
+  /// Teacher ने निवडलेल्या फोटोचे bytes (upload होण्यापूर्वी). Firestore मध्ये जात नाही.
+  final Uint8List? bytes;
 }
 
 class PhotoBatch {
@@ -277,7 +288,9 @@ class ChildInfo {
   /// Teacher ने photo वर tag केलेले नाव या मुलाचे आहे का?
   bool matches(Iterable<String> tags) {
     if (firstName.isEmpty) return false;
-    return tags.any((t) => t.toLowerCase().contains(firstName.toLowerCase()));
+    final me = firstName.trim().toLowerCase();
+    // पूर्ण नाव जुळलं पाहिजे ('Ana' tag मुळे 'Anaya' च्या parent ला फोटो दिसू नये).
+    return tags.any((t) => t.trim().toLowerCase() == me);
   }
 
   String ageLabel(DateTime now) {
@@ -290,6 +303,14 @@ class ChildInfo {
     }
     return '${y}y ${m}m';
   }
+}
+
+/// Parent साठी: मुलाच्या एका दिवसाची हजेरी (P = Present, L = Late, A = Absent).
+class AttendanceDay {
+  const AttendanceDay(this.date, this.status, this.reason);
+  final DateTime date;
+  final String status;
+  final String reason;
 }
 
 enum FeeStatus { paid, due, upcoming }
@@ -306,8 +327,11 @@ class FeeItem {
 
 class FeeReceipt {
   const FeeReceipt(this.title, this.amount, this.date, this.mode,
-      {this.id = ''});
+      {this.id = '', this.feeId = ''});
   final String id;
+
+  /// कोणत्या fee ची ही receipt (title वरून अंदाज लावण्याऐवजी खरा link).
+  final String feeId;
   final String title;
   final int amount;
   final DateTime date;
@@ -405,6 +429,9 @@ class AppState extends ChangeNotifier {
   Map<String, String> attendanceReasons = {};
   List<_AttRow> _weekRows = [];
 
+  /// Parent: मुलाची आतापर्यंतची सर्व हजेरी (नवीन दिवस आधी).
+  List<AttendanceDay> attendanceHistory = [];
+
   List<PhotoBatch> photoBatches = [];
   List<DiaryPost> diaryPosts = [];
   List<CircularRecord> circulars = [];
@@ -436,11 +463,18 @@ class AppState extends ChangeNotifier {
       if (!udoc.exists) return 'Profile not found. Please register again.';
       final u = udoc.data()!;
 
+      final pendingRole = (u['role'] ?? '') as String;
+      if (pendingRole == 'teacher' && u['approved'] == false) {
+        return 'Your account is waiting for Admin approval. '
+            'Please try again after the school approves you.';
+      }
+
       uid = user.uid;
-      role = (u['role'] ?? '') as String;
+      role = pendingRole;
       classId = (u['classId'] ?? '') as String;
 
       if (role == 'teacher') {
+        await _ensureClassDoc(u);
         teacherName = (u['name'] ?? 'Teacher') as String;
         className = (u['className'] ?? '') as String;
         schoolName = (u['schoolName'] ?? '') as String;
@@ -463,6 +497,24 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  /// Approve नंतर `classes/{classId}` नसेल तर बनवतो (Parent app ला teacher/class नाव दिसावं म्हणून).
+  Future<void> _ensureClassDoc(Map<String, dynamic> u) async {
+    if (classId.isEmpty) return;
+    try {
+      final ref = _db.collection('classes').doc(classId);
+      final snap = await ref.get();
+      if (snap.exists) return;
+      await ref.set({
+        'teacherName': (u['name'] ?? '') as String,
+        'className': (u['className'] ?? '') as String,
+        'schoolName': (u['schoolName'] ?? '') as String,
+        'teacherUid': uid,
+      }, SetOptions(merge: true));
+    } catch (e) {
+      lastError = '$e';
+    }
+  }
+
   Future<void> endSession() async {
     await _cancelAll();
     uid = '';
@@ -480,6 +532,7 @@ class AppState extends ChangeNotifier {
     attendanceStatuses = {};
     attendanceReasons = {};
     _weekRows = [];
+    attendanceHistory = [];
     photoBatches = [];
     diaryPosts = [];
     circulars = [];
@@ -616,6 +669,22 @@ class AppState extends ChangeNotifier {
       schoolName = (c['schoolName'] ?? '') as String;
     }
 
+    // Class चा teacher / नाव बदलला (Admin ने नवीन teacher assign केला) तर लगेच दिसेल.
+    if (classId.isNotEmpty) _subs.add(_db.collection('classes').doc(classId).snapshots().listen(
+          (d) {
+        if (!d.exists) return;
+        final c = d.data()!;
+        final tn = (c['teacherName'] ?? '') as String;
+        teacherName = tn.isEmpty ? 'Teacher' : tn;
+        className = (c['className'] ?? className) as String;
+        schoolName = (c['schoolName'] ?? schoolName) as String;
+        notifyListeners();
+      },
+      onError: (Object e) {
+        lastError = '$e';
+      },
+    ));
+
     // Child profile live (teacher ने बदल केला तर दिसेल)
     _subs.add(_db.collection('students').doc(studentId).snapshots().listen(
           (d) {
@@ -642,6 +711,26 @@ class AppState extends ChangeNotifier {
             if (((d['reason'] ?? '') as String).isNotEmpty)
               studentId: d['reason'] as String,
         };
+      },
+    );
+
+    // पूर्ण हजेरी history (Parent च्या Attendance screen साठी)
+    _listen(
+      _db.collection('attendance').where('studentId', isEqualTo: studentId),
+          (snap) {
+        final list = <AttendanceDay>[];
+        for (final d in snap.docs) {
+          final x = d.data();
+          final date = DateTime.tryParse((x['day'] ?? '') as String);
+          if (date == null) continue;
+          list.add(AttendanceDay(
+            date,
+            (x['status'] ?? '') as String,
+            (x['reason'] ?? '') as String,
+          ));
+        }
+        list.sort((a, b) => b.date.compareTo(a.date));
+        attendanceHistory = list;
       },
     );
 
@@ -688,6 +777,7 @@ class AppState extends ChangeNotifier {
               _dt(d['date']) ?? DateTime.now(),
               (d['mode'] ?? '') as String,
               id: d.id,
+              feeId: (d.data()['feeId'] ?? '') as String,
             ),
         ];
       },
@@ -831,8 +921,38 @@ class AppState extends ChangeNotifier {
   Future<void> updateStudent(ChildInfo s) =>
       _db.collection('students').doc(s.id).update(s.toMap());
 
-  Future<void> deleteStudent(String studentId) =>
-      _db.collection('students').doc(studentId).delete();
+  /// विद्यार्थी + त्याचा संबंधित data (fees, receipts, attendance, chat) एकत्र काढतो.
+  /// Student document शेवटी काढतो (rules त्याच्या class वरून बाकीची परवानगी तपासतात).
+  Future<void> deleteStudent(String studentId) async {
+    final sRef = _db.collection('students').doc(studentId);
+    final refs = <DocumentReference<Map<String, dynamic>>>[];
+
+    for (final sub in const ['fees', 'receipts']) {
+      final q = await sRef.collection(sub).get();
+      refs.addAll(q.docs.map((d) => d.reference));
+    }
+    final att = await _db
+        .collection('attendance')
+        .where('classId', isEqualTo: classId)
+        .where('studentId', isEqualTo: studentId)
+        .get();
+    refs.addAll(att.docs.map((d) => d.reference));
+
+    final tRef = _db.collection('threads').doc(studentId);
+    final msgs = await tRef.collection('messages').get();
+    refs.addAll(msgs.docs.map((d) => d.reference));
+    // thread document आहे का हे memory मधून बघतो (नसलेल्या doc ला get केलं तर rules error देतात).
+    if (_threadMetas.containsKey(studentId)) refs.add(tRef);
+
+    for (var i = 0; i < refs.length; i += 400) {
+      final batch = _db.batch();
+      for (final r in refs.skip(i).take(400)) {
+        batch.delete(r);
+      }
+      await batch.commit();
+    }
+    await sRef.delete();
+  }
 
   /// `statuses` चे keys = studentId, values = 'P' / 'A' / 'L'.
   Future<void> saveAttendance({
@@ -876,9 +996,23 @@ class AppState extends ChangeNotifier {
         : List.generate(count, (i) => SharedPhoto(i % 4, const []));
     final now = DateTime.now();
     final batchId = _db.collection('classes').doc().id;
+
+    // आधी खरे फोटो Firebase Storage वर चढवतो (एकाच वेळी), मग Firestore मध्ये नोंद.
+    final urls = await Future.wait([
+      for (var i = 0; i < list.length; i++)
+        list[i].bytes == null
+            ? Future<String?>.value(list[i].url)
+            : _uploadBytes(
+          'classes/$classId/photos/$batchId/$i.jpg',
+          list[i].bytes!,
+          'image/jpeg',
+        ),
+    ]);
+
     final batch = _db.batch();
 
-    for (final p in list) {
+    for (var i = 0; i < list.length; i++) {
+      final p = list[i];
       final audience = <String>{};
       if (wholeClass) {
         audience.add('all');
@@ -891,7 +1025,7 @@ class AppState extends ChangeNotifier {
         'batchId': batchId,
         'colorIndex': p.colorIndex,
         'tags': p.tags,
-        'url': p.url,
+        'url': urls[i],
         'caption': caption,
         'wholeClass': wholeClass,
         'audience': audience.toList(),
@@ -900,6 +1034,30 @@ class AppState extends ChangeNotifier {
       });
     }
     await batch.commit();
+  }
+
+  Future<String> _uploadBytes(
+      String path, Uint8List data, String contentType) async {
+    final ref = FirebaseStorage.instance.ref(path);
+    await ref.putData(data, SettableMetadata(contentType: contentType));
+    return ref.getDownloadURL();
+  }
+
+  /// Circular चं attachment (PDF / image) Storage वर चढवून download link देतो.
+  Future<String> uploadCircularAttachment(
+      Uint8List data, String fileName) async {
+    final lower = fileName.toLowerCase();
+    final type = lower.endsWith('.pdf')
+        ? 'application/pdf'
+        : lower.endsWith('.png')
+        ? 'image/png'
+        : 'image/jpeg';
+    final safe = fileName.replaceAll(RegExp(r'[^A-Za-z0-9._-]+'), '_');
+    return _uploadBytes(
+      'classes/$classId/circulars/${DateTime.now().millisecondsSinceEpoch}_$safe',
+      data,
+      type,
+    );
   }
 
   Future<void> publishDiary({
@@ -968,6 +1126,7 @@ class AppState extends ChangeNotifier {
       'amount': fee.amount,
       'date': Timestamp.fromDate(DateTime.now()),
       'mode': mode,
+      'feeId': fee.id,
     });
     await batch.commit();
   }
@@ -1063,13 +1222,26 @@ class AppState extends ChangeNotifier {
   }
 
   /// उघडलेल्या thread चा unread counter 0 करतो (आपल्या बाजूचा).
+  /// आधीच 0 असेल तर काही लिहीत नाही; classId सोबत लिहितो म्हणजे Firestore
+  /// rules पास होतात (thread document अजून नसला तरी).
   Future<void> markThreadRead(String key) async {
     final k = _threadKey(key);
     if (k.isEmpty) return;
-    await _db.collection('threads').doc(k).set(
-      {isParent ? 'parentUnread' : 'teacherUnread': 0},
-      SetOptions(merge: true),
-    );
+    final unread = isParent
+        ? (_myThreadMeta?.parentUnreadCount ?? 0)
+        : (_threadMetas[k]?.teacherUnread ?? 0);
+    if (unread == 0) return;
+    try {
+      await _db.collection('threads').doc(k).set(
+        {
+          'classId': classId,
+          isParent ? 'parentUnread' : 'teacherUnread': 0,
+        },
+        SetOptions(merge: true),
+      );
+    } catch (e) {
+      lastError = '$e';
+    }
   }
 
   /// जुना call (messages_screen) — आता काही करत नाही; markThreadRead वापरा.
@@ -1086,12 +1258,13 @@ class AppState extends ChangeNotifier {
   /// 'P' / 'L' / 'A' किंवा '' (अजून mark नाही)
   String get childAttendanceCode => attendanceStatuses[child.id] ?? '';
 
+  /// Parent: त्या दिवशीचे सर्व photos. Firestore query आधीच फक्त या मुलाचे +
+  /// whole-class photos आणते, म्हणून नावाने पुन्हा गाळत नाही
+  /// (नाहीतर whole-class photos Home च्या count मध्ये येत नव्हते).
   List<SharedPhoto> childPhotosOn(DateTime day) {
     final out = <SharedPhoto>[];
     for (final b in photoBatches) {
-      if (_sameDay(b.sentAt, day)) {
-        out.addAll(b.photos.where((p) => child.matches(p.tags)));
-      }
+      if (_sameDay(b.sentAt, day)) out.addAll(b.photos);
     }
     return out;
   }
@@ -1129,9 +1302,16 @@ class AppState extends ChangeNotifier {
     if (!isParent || c.id.isEmpty) return;
     if (c.readBy.contains(child.id) || !_pendingRead.add(c.id)) return;
     notifyListeners();
-    await _classCol('circulars').doc(c.id).update({
-      'readBy': FieldValue.arrayUnion([child.id]),
-    });
+    try {
+      await _classCol('circulars').doc(c.id).update({
+        'readBy': FieldValue.arrayUnion([child.id]),
+      });
+    } catch (e) {
+      // Save झालं नाही तर 'read' खूण परत काढतो.
+      _pendingRead.remove(c.id);
+      lastError = '$e';
+      notifyListeners();
+    }
   }
 
   bool isAcked(CircularRecord c) =>
@@ -1143,10 +1323,18 @@ class AppState extends ChangeNotifier {
     _pendingRead.add(c.id);
     _pendingAck.add(c.id);
     notifyListeners();
-    await _classCol('circulars').doc(c.id).update({
-      'readBy': FieldValue.arrayUnion([child.id]),
-      'ackedBy': FieldValue.arrayUnion([child.id]),
-    });
+    try {
+      await _classCol('circulars').doc(c.id).update({
+        'readBy': FieldValue.arrayUnion([child.id]),
+        'ackedBy': FieldValue.arrayUnion([child.id]),
+      });
+    } catch (e) {
+      _pendingRead.remove(c.id);
+      _pendingAck.remove(c.id);
+      lastError = '$e';
+      notifyListeners();
+      rethrow; // screen ला कळावं म्हणून
+    }
   }
 
   /// Parent: acknowledgement बाकी असलेल्या circulars ची संख्या.

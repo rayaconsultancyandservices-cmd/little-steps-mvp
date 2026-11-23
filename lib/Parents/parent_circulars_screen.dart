@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../state/app_state.dart';
 import '../theme/app_colors.dart';
@@ -625,10 +626,19 @@ class _ParentCircularsScreenState extends State<ParentCircularsScreen> {
                   title: 'Attachment',
                   value: c.attachment!,
                   trailing: TextButton(
-                    onPressed: () => showSnack(
-                      context,
-                      'Attachment will open once file storage is connected.',
-                    ),
+                    onPressed: () async {
+                      final url = c.attachmentUrl;
+                      if (url == null || url.isEmpty) {
+                        showSnack(context,
+                            'The school has not uploaded this file yet.');
+                        return;
+                      }
+                      final ok = await launchUrl(Uri.parse(url),
+                          mode: LaunchMode.externalApplication);
+                      if (!ok && context.mounted) {
+                        showSnack(context, 'Could not open the attachment.');
+                      }
+                    },
                     child: const Text('Open',
                         style: TextStyle(fontWeight: FontWeight.w800)),
                   ),
@@ -666,10 +676,17 @@ class _ParentCircularsScreenState extends State<ParentCircularsScreen> {
                         ),
                       )
                           : ElevatedButton.icon(
-                        onPressed: () {
-                          s.acknowledgeCircular(c);
-                          showSnack(context,
-                              'Thank you! Teacher knows you have read this.');
+                        onPressed: () async {
+                          try {
+                            await s.acknowledgeCircular(c);
+                            if (!context.mounted) return;
+                            showSnack(context,
+                                'Thank you! Teacher knows you have read this.');
+                          } catch (_) {
+                            if (!context.mounted) return;
+                            showSnack(context,
+                                'Could not save. Please check your internet and try again.');
+                          }
                         },
                         icon: const Icon(Icons.done_all_rounded,
                             size: 20),

@@ -49,7 +49,7 @@ class _ParentMessageScreenState extends State<ParentMessageScreen> {
   bool _showJump = false;
   int _lastCount = 0;
 
-  String get _key => AppState.instance.child.parentName;
+  String get _key => AppState.instance.child.id;
 
   @override
   void initState() {
@@ -57,6 +57,8 @@ class _ParentMessageScreenState extends State<ParentMessageScreen> {
     _controller.addListener(() => setState(() {}));
     _scroll.addListener(_onScroll);
     WidgetsBinding.instance.addPostFrameCallback((_) => _toBottom(animate: false));
+    // Chat उघडल्यावर teacher चे unread messages "वाचले" म्हणून नोंदवतो.
+    AppState.instance.markThreadRead(_key);
   }
 
   @override
@@ -88,12 +90,18 @@ class _ParentMessageScreenState extends State<ParentMessageScreen> {
     }
   }
 
-  void _send() {
+  Future<void> _send() async {
     final text = _controller.text.trim();
     if (text.isEmpty) return;
-    AppState.instance.sendMessage(_key, text, fromTeacher: false);
     _controller.clear();
     WidgetsBinding.instance.addPostFrameCallback((_) => _toBottom());
+    try {
+      await AppState.instance.sendMessage(_key, text, fromTeacher: false);
+    } catch (_) {
+      if (!mounted) return;
+      _controller.text = text; // हरवू नये म्हणून परत टाकतो
+      showSnack(context, 'Message not sent. Please check your internet.');
+    }
   }
 
   void _useQuickReply(String text) {
@@ -132,6 +140,8 @@ class _ParentMessageScreenState extends State<ParentMessageScreen> {
                     _lastCount = msgs.length;
                     WidgetsBinding.instance
                         .addPostFrameCallback((_) => _toBottom());
+                    // Chat उघडा असताना आलेला नवीन message लगेच "वाचला" होतो.
+                    if (s.unreadMessages > 0) s.markThreadRead(_key);
                   }
 
                   return Stack(
@@ -142,10 +152,22 @@ class _ParentMessageScreenState extends State<ParentMessageScreen> {
                         ListView.builder(
                           controller: _scroll,
                           padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
-                          itemCount: msgs.length + 1,
+                          itemCount: msgs.length,
                           itemBuilder: (_, i) {
-                            if (i == 0) return _dayLabel('Today');
-                            return _bubble(msgs[i - 1]);
+                            final m = msgs[i];
+                            final prev = i == 0 ? null : msgs[i - 1];
+                            // तारीख बदलली की खरा दिवस दाखवतो (आधी नेहमी 'Today' होतं).
+                            final showDay = m.at != null &&
+                                (prev?.at == null ||
+                                    !AppState.sameDay(prev!.at!, m.at!));
+                            return Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                if (showDay)
+                                  _dayLabel(AppState.relativeDay(m.at!)),
+                                _bubble(m),
+                              ],
+                            );
                           },
                         ),
                       if (_showJump)

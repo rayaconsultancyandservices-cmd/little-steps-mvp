@@ -6,7 +6,7 @@ import '../theme/app_colors.dart';
 import '../widgets/parent_widgets.dart';
 import 'parent_home_screen.dart' show ParentColors;
 
-/// P5 · Fees  (School office कडून येणारा data; सध्या demo)
+/// P5 · Fees  (School office / Teacher ने भरलेला खरा data — Firestore)
 ///
 /// Features:
 ///  - Back arrow (same as Photos / Diary / Circulars)
@@ -46,8 +46,16 @@ class ParentFeesScreen extends StatelessWidget {
   }
 
   FeeReceipt? _receiptFor(AppState s, FeeItem f) {
+    // खरा link: receipt मध्ये feeId असतो. जुन्या receipts साठी title वर fallback.
     for (final r in s.receipts) {
-      if (f.title.toLowerCase().startsWith(r.title.toLowerCase())) return r;
+      if (r.feeId.isNotEmpty && r.feeId == f.id) return r;
+    }
+    for (final r in s.receipts) {
+      if (r.feeId.isEmpty &&
+          r.title.isNotEmpty &&
+          f.title.toLowerCase() == r.title.toLowerCase()) {
+        return r;
+      }
     }
     return null;
   }

@@ -47,7 +47,10 @@ class _HomeScreenState extends State<HomeScreen> {
     return clean.isEmpty ? 'T' : clean[0].toUpperCase();
   }
 
-  void _logout() {
+  Future<void> _logout() async {
+    // Firebase session + live streams खऱ्या अर्थाने बंद (आधी फक्त screen बदलत होता).
+    await AuthService.signOut();
+    if (!mounted) return;
     Navigator.of(context).pushAndRemoveUntil(
       MaterialPageRoute<void>(builder: (_) => const LoginScreen()),
           (route) => false,

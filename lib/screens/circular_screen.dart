@@ -1,3 +1,6 @@
+import 'dart:typed_data';
+
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../state/app_state.dart';
@@ -26,6 +29,8 @@ class _Draft {
     required this.chosen,
     required this.eventDate,
     required this.attachment,
+    this.attachmentBytes,
+    this.attachmentUrl,
     required this.important,
     required this.needsAck,
     required this.scheduledFor,
@@ -39,6 +44,8 @@ class _Draft {
   final Set<String> chosen;
   final DateTime? eventDate;
   final String? attachment;
+  final Uint8List? attachmentBytes;
+  final String? attachmentUrl;
   final bool important;
   final bool needsAck;
   final DateTime? scheduledFor;
@@ -152,7 +159,11 @@ class _CircularScreenState extends State<CircularScreen> {
 
   String _category = 'Notice';
   DateTime? _eventDate;
-  String? _attachment;
+  String? _attachment; // file चं नाव
+  Uint8List? _attachmentBytes; // निवडलेल्या file चे bytes (send वेळी upload)
+  String? _attachmentUrl; // आधी upload झालेला link (Reuse केल्यावर)
+
+  static const int _maxAttachmentBytes = 10 * 1024 * 1024;
 
   // Delivery options
   bool _important = false;
@@ -388,7 +399,45 @@ class _CircularScreenState extends State<CircularScreen> {
     setState(() => _scheduledFor = result);
   }
 
-  // Demo attachment picker
+  // खरा file picker (PDF / Image) – send करताना Firebase Storage वर चढतो.
+  Future<void> _pickAttachment({required bool pdf}) async {
+    try {
+      final res = await FilePicker.platform.pickFiles(
+        type: pdf ? FileType.custom : FileType.image,
+        allowedExtensions: pdf ? const ['pdf'] : null,
+        withData: true,
+      );
+      if (res == null || res.files.isEmpty || !mounted) return;
+
+      final f = res.files.first;
+      final bytes = f.bytes;
+      if (bytes == null) {
+        _showMessage('Could not read this file. Please try another one.');
+        return;
+      }
+      if (bytes.length > _maxAttachmentBytes) {
+        _showMessage('File is too large. Maximum size is 10 MB.');
+        return;
+      }
+      setState(() {
+        _attachment = f.name;
+        _attachmentBytes = bytes;
+        _attachmentUrl = null;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      _showMessage('Could not pick file: $e');
+    }
+  }
+
+  void _clearAttachment() {
+    setState(() {
+      _attachment = null;
+      _attachmentBytes = null;
+      _attachmentUrl = null;
+    });
+  }
+
   void _attach() {
     showModalBottomSheet<void>(
       context: context,
@@ -419,10 +468,10 @@ class _CircularScreenState extends State<CircularScreen> {
                     const Color(0xFFE16B61),
                   ),
                   title: const Text('Attach PDF'),
-                  subtitle: const Text('PDF document · Demo'),
+                  subtitle: const Text('PDF document · up to 10 MB'),
                   onTap: () {
                     Navigator.pop(ctx);
-                    setState(() => _attachment = 'circular.pdf');
+                    _pickAttachment(pdf: true);
                   },
                 ),
                 ListTile(
@@ -431,10 +480,10 @@ class _CircularScreenState extends State<CircularScreen> {
                     const Color(0xFF4786C7),
                   ),
                   title: const Text('Attach Image'),
-                  subtitle: const Text('Image file · Demo'),
+                  subtitle: const Text('Image file · up to 10 MB'),
                   onTap: () {
                     Navigator.pop(ctx);
-                    setState(() => _attachment = 'notice.jpg');
+                    _pickAttachment(pdf: false);
                   },
                 ),
               ],
@@ -475,6 +524,8 @@ class _CircularScreenState extends State<CircularScreen> {
     _category = 'Notice';
     _eventDate = null;
     _attachment = null;
+    _attachmentBytes = null;
+    _attachmentUrl = null;
     _audience = 0;
     _chosen.clear();
     _important = false;
@@ -500,6 +551,8 @@ class _CircularScreenState extends State<CircularScreen> {
           chosen: Set<String>.of(_chosen),
           eventDate: _eventDate,
           attachment: _attachment,
+          attachmentBytes: _attachmentBytes,
+          attachmentUrl: _attachmentUrl,
           important: _important,
           needsAck: _needsAck,
           scheduledFor: _scheduleLater ? _scheduledFor : null,
@@ -524,6 +577,8 @@ class _CircularScreenState extends State<CircularScreen> {
         ..addAll(d.chosen);
       _eventDate = d.eventDate;
       _attachment = d.attachment;
+      _attachmentBytes = d.attachmentBytes;
+      _attachmentUrl = d.attachmentUrl;
       _important = d.important;
       _needsAck = d.needsAck;
       _scheduleLater = d.scheduledFor != null;
@@ -555,6 +610,8 @@ class _CircularScreenState extends State<CircularScreen> {
       _category = record.category;
       _eventDate = null;
       _attachment = record.attachment;
+      _attachmentBytes = null;
+      _attachmentUrl = record.attachmentUrl;
     });
 
     _showMessage('Circular copied. Add the message and send again.');
@@ -783,7 +840,20 @@ class _CircularScreenState extends State<CircularScreen> {
 
     setState(() => _isSending = true);
 
-    await Future<void>.delayed(const Duration(milliseconds: 450));
+    // निवडलेली file असेल तर आधी Storage वर चढवतो, मग तिचा link circular मध्ये जातो.
+    String? attachmentUrl = _attachmentUrl;
+    if (_attachmentBytes != null && _attachment != null) {
+      try {
+        attachmentUrl = await AppState.instance
+            .uploadCircularAttachment(_attachmentBytes!, _attachment!)
+            .timeout(const Duration(minutes: 2));
+      } catch (e) {
+        if (!mounted) return;
+        setState(() => _isSending = false);
+        _showMessage('Could not upload attachment: $e');
+        return;
+      }
+    }
     if (!mounted) return;
 
     // FIX 4: आता message, important आणि scheduledFor सुद्धा AppState ला जातात,
@@ -798,6 +868,7 @@ class _CircularScreenState extends State<CircularScreen> {
       sentAt: scheduled ?? DateTime.now(),
       eventDate: _eventDate,
       attachment: _attachment,
+      attachmentUrl: attachmentUrl,
       message: _message.text.trim(),
       important: _important,
       scheduledFor: scheduled,
@@ -810,7 +881,17 @@ class _CircularScreenState extends State<CircularScreen> {
       scheduledFor: scheduled,
     );
 
-    AppState.instance.addCircular(record);
+    try {
+      await AppState.instance
+          .addCircular(record)
+          .timeout(const Duration(seconds: 30));
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isSending = false);
+      _showMessage('Could not send circular: $e');
+      return;
+    }
+    if (!mounted) return;
 
     setState(() {
       _resetForm();
@@ -1199,7 +1280,7 @@ class _CircularScreenState extends State<CircularScreen> {
                           ),
                           SizedBox(height: 4),
                           Text(
-                            'Choose an optional attachment · Demo',
+                            'Choose an optional attachment (PDF / image)',
                             style: TextStyle(color: _muted, fontSize: 10),
                           ),
                         ],
@@ -1221,7 +1302,7 @@ class _CircularScreenState extends State<CircularScreen> {
               child: Row(
                 children: [
                   Icon(
-                    _attachment!.endsWith('.pdf')
+                    _attachment!.toLowerCase().endsWith('.pdf')
                         ? Icons.picture_as_pdf_rounded
                         : Icons.image_rounded,
                     color: _primary,
@@ -1240,7 +1321,7 @@ class _CircularScreenState extends State<CircularScreen> {
                   ),
                   IconButton(
                     tooltip: 'Remove attachment',
-                    onPressed: () => setState(() => _attachment = null),
+                    onPressed: _clearAttachment,
                     icon: const Icon(
                       Icons.close_rounded,
                       color: Color(0xFFE16B61),

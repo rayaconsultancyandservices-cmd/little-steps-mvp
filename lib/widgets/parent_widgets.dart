@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../theme/app_colors.dart';
 
@@ -188,4 +189,24 @@ void showSnack(BuildContext context, String text) {
     ..showSnackBar(
       SnackBar(content: Text(text), behavior: SnackBarBehavior.floating),
     );
+}
+
+/// फोन मध्ये (मुलानुसार) छोटे choices save करण्यासाठी:
+/// Diary चे "done / packed" ticks आणि Photos चे favourites.
+class ParentPrefs {
+  static Future<Set<String>> load(String key) async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      return (p.getStringList(key) ?? const <String>[]).toSet();
+    } catch (_) {
+      return <String>{};
+    }
+  }
+
+  static Future<void> save(String key, Set<String> values) async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.setStringList(key, values.toList());
+    } catch (_) {}
+  }
 }

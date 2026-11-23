@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../config/app_config.dart';
 import '../services/auth_service.dart';
@@ -195,6 +196,13 @@ class _ParentSplashScreenState extends State<ParentSplashScreen>
   Future<void> _goNext() async {
     if (!mounted || _gone) return;
     _gone = true;
+    // "Remember Me" बंद ठेवलं होतं तर session काढतो.
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (prefs.getBool('parent_remember') == false) {
+        await AuthService.signOut();
+      }
+    } catch (_) {}
     // आधी login केलेला असेल तर थेट home, नाहीतर login screen.
     final loggedIn = await AuthService.restoreSession('parent');
     if (!mounted) return;

@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../config/app_config.dart';
 import '../services/auth_service.dart';
@@ -137,6 +138,13 @@ class _ParentLoginScreenState extends State<ParentLoginScreen>
       _snack(error);
       return;
     }
+
+    // "Remember Me": बंद असेल तर पुढच्या वेळी app उघडल्यावर पुन्हा login मागतो.
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('parent_remember', rememberMe);
+    } catch (_) {}
+    if (!mounted) return;
 
     // Opens this APK's own home screen (AppConfig.homeBuilder).
     Navigator.pushReplacement(

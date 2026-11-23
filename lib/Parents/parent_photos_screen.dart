@@ -58,6 +58,17 @@ class _ParentPhotosScreenState extends State<ParentPhotosScreen> {
 
   final ValueNotifier<Set<String>> _favs = ValueNotifier<Set<String>>({});
 
+  String get _favKey => 'parent_photo_favs_${AppState.instance.child.id}';
+
+  @override
+  void initState() {
+    super.initState();
+    ParentPrefs.load(_favKey).then((v) {
+      if (mounted && v.isNotEmpty) _favs.value = {..._favs.value, ...v};
+    });
+    _favs.addListener(() => ParentPrefs.save(_favKey, _favs.value));
+  }
+
   @override
   void dispose() {
     _favs.dispose();
@@ -70,8 +81,13 @@ class _ParentPhotosScreenState extends State<ParentPhotosScreen> {
   List<_Group> _groups(AppState s, int tab) {
     final groups = <_Group>[];
     for (final b in s.photoBatches) {
+      // Firestore query आधीच फक्त या मुलाचे + whole-class photos देते (audience).
+      // त्यामुळे नावाने पुन्हा गाळायची गरज नाही — नाहीतर tag नसलेले / वेगळ्या
+      // spelling चे photos हरवायचे.
       final list = tab == 0
-          ? b.photos.where((p) => s.child.matches(p.tags)).toList()
+          ? b.photos
+          .where((p) => !b.wholeClass || s.child.matches(p.tags))
+          .toList()
           : (b.wholeClass ? b.photos : <SharedPhoto>[]);
       if (list.isEmpty) continue;
 
@@ -85,9 +101,10 @@ class _ParentPhotosScreenState extends State<ParentPhotosScreen> {
         g.sentAt = b.sentAt;
         groups.add(g);
       }
-      for (final p in list) {
-        final key =
-            '$tab:${g.day.year}-${g.day.month}-${g.day.day}:${g.items.length}';
+      for (var pi = 0; pi < list.length; pi++) {
+        final p = list[pi];
+        // Stable key: नवीन photos आले तरी जुन्या favourites चा key बदलत नाही.
+        final key = '$tab:${b.sentAt.millisecondsSinceEpoch}:$pi';
         g.items.add(_Item(key, p));
       }
     }
@@ -716,13 +733,31 @@ class _ParentPhotosScreenState extends State<ParentPhotosScreen> {
 // PHOTO ART (placeholder picture until real photos are connected)
 // =====================================================================
 class _PhotoArt extends StatelessWidget {
-  const _PhotoArt({required this.colorIndex, this.iconSize = 34});
+  const _PhotoArt({required this.colorIndex, this.iconSize = 34, this.url});
 
   final int colorIndex;
   final double iconSize;
 
+  /// Teacher ने खरा photo upload केला असेल तर त्याचा Firebase Storage link.
+  final String? url;
+
   @override
   Widget build(BuildContext context) {
+    final u = url;
+    if (u != null && u.isNotEmpty) {
+      return Image.network(
+        u,
+        fit: BoxFit.cover,
+        loadingBuilder: (ctx, child, progress) => progress == null
+            ? child
+            : _placeholder(),
+        errorBuilder: (_, __, ___) => _placeholder(),
+      );
+    }
+    return _placeholder();
+  }
+
+  Widget _placeholder() {
     final i = colorIndex % kPhotoColors.length;
     final base = kPhotoColors[i];
     final deep = kPhotoIconColors[i];
@@ -837,7 +872,8 @@ class _PhotoCard extends StatelessWidget {
             children: [
               Hero(
                 tag: 'photo-${item.key}',
-                child: _PhotoArt(colorIndex: item.photo.colorIndex),
+                child: _PhotoArt(
+                    colorIndex: item.photo.colorIndex, url: item.photo.url),
               ),
               if (isNew)
                 Positioned(
@@ -999,6 +1035,7 @@ class _PhotoViewerState extends State<_PhotoViewer> {
                         child: ClipRRect(
                           borderRadius: BorderRadius.circular(20),
                           child: _PhotoArt(
+                            url: e.item.photo.url,
                             colorIndex: e.item.photo.colorIndex,
                             iconSize: 56,
                           ),

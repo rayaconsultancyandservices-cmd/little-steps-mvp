@@ -622,11 +622,21 @@ class _ChatScreenState extends State<ChatScreen> {
     if (text.isEmpty) return;
 
     // FIX 6: संदेश AppState मध्ये save होतो -> Parent ला लगेच दिसतो.
-    AppState.instance.sendMessage(
+    AppState.instance
+        .sendMessage(
       widget.studentId,
       text,
       fromTeacher: true,
-    );
+    )
+        .catchError((Object e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Message not sent: $e'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    });
     _controller.clear();
     setState(() {});
 

@@ -1,5 +1,8 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:image_picker/image_picker.dart';
 
 import '../state/app_state.dart';
 import '../theme/app_colors.dart';
@@ -7,10 +10,14 @@ import '../widgets/app_button.dart';
 import '../widgets/page_app_bar.dart';
 
 class _Photo {
-  _Photo(this.colorIndex, [Set<String>? tags]) : tags = tags ?? <String>{};
+  _Photo(this.colorIndex, {Set<String>? tags, this.bytes})
+      : tags = tags ?? <String>{};
 
   final int colorIndex;
   final Set<String> tags;
+
+  /// खरा फोटो (camera / gallery मधून). Send करताना Firebase Storage वर चढतो.
+  final Uint8List? bytes;
 }
 
 class PhotosScreen extends StatefulWidget {
@@ -73,6 +80,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
   ];
 
   final TextEditingController _caption = TextEditingController();
+  final ImagePicker _picker = ImagePicker();
 
   int _mode = 0; // 0 = selected children, 1 = whole class
   int _counter = 0;
@@ -125,7 +133,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
   // ---------------------------------------------------------------
   // ACTIONS
   // ---------------------------------------------------------------
-  void _addPhotos(String source, int howMany) {
+  Future<void> _addPhotos(String source, int howMany) async {
     final room = _maxPhotos - _photos.length;
 
     if (room <= 0) {
@@ -133,23 +141,50 @@ class _PhotosScreenState extends State<PhotosScreen> {
       return;
     }
 
-    final toAdd = howMany > room ? room : howMany;
-
     HapticFeedback.selectionClick();
 
-    setState(() {
-      for (var i = 0; i < toAdd; i++) {
-        // खोटं auto-tag नाही: teacher स्वतः मुलांना tag करतो.
-        _photos.add(_Photo(_counter % _tileBg.length));
+    try {
+      // खरा camera / gallery picker (आधी रंगीत dummy tiles बनत होते).
+      final List<XFile> picked;
+      if (source == 'Camera') {
+        final f = await _picker.pickImage(
+          source: ImageSource.camera,
+          maxWidth: 1600,
+          imageQuality: 80,
+        );
+        picked = f == null ? <XFile>[] : <XFile>[f];
+      } else {
+        picked = await _picker.pickMultiImage(
+          maxWidth: 1600,
+          imageQuality: 80,
+        );
+      }
+      if (picked.isEmpty || !mounted) return;
+
+      final take = picked.take(room).toList();
+      final loaded = <_Photo>[];
+      for (final x in take) {
+        final bytes = await x.readAsBytes();
+        loaded.add(_Photo(_counter % _tileBg.length, bytes: bytes));
         _counter++;
       }
-    });
+      if (!mounted) return;
 
-    _msg(
-      toAdd == 1
-          ? 'Photo added from $source.'
-          : '$toAdd photos added from $source.',
-    );
+      setState(() => _photos.addAll(loaded));
+
+      if (picked.length > take.length) {
+        _msg('Only $room more photo(s) fit. Max $_maxPhotos at a time.');
+      } else {
+        _msg(
+          loaded.length == 1
+              ? 'Photo added from $source.'
+              : '${loaded.length} photos added from $source.',
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      _msg('Could not open $source: $e');
+    }
   }
 
   void _removePhoto(int index) {
@@ -242,8 +277,6 @@ class _PhotosScreenState extends State<PhotosScreen> {
     if (confirmed != true || !mounted) return;
 
     setState(() => _sending = true);
-    await Future<void>.delayed(const Duration(milliseconds: 500));
-    if (!mounted) return;
 
     // FIX 5: आता खरे tags, caption आणि whole-class माहिती AppState ला जाते.
     // - "Selected children" mode: प्रत्येक photo वर tag केलेल्या मुलांची नावं.
@@ -260,16 +293,27 @@ class _PhotosScreenState extends State<PhotosScreen> {
           (p) => SharedPhoto(
         p.colorIndex,
         isWholeClass ? <String>[] : p.tags.toList(),
+        bytes: p.bytes,
       ),
     )
         .toList();
 
-    AppState.instance.addPhotos(
-      count,
-      photos: sharedPhotos,
-      caption: fullCaption,
-      wholeClass: isWholeClass,
-    );
+    try {
+      await AppState.instance
+          .addPhotos(
+        count,
+        photos: sharedPhotos,
+        caption: fullCaption,
+        wholeClass: isWholeClass,
+      )
+          .timeout(const Duration(minutes: 3));
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _sending = false);
+      _msg('Could not send photos: $e');
+      return;
+    }
+    if (!mounted) return;
 
     setState(() {
       _sending = false;
@@ -443,11 +487,14 @@ class _PhotosScreenState extends State<PhotosScreen> {
               Container(
                 height: 220,
                 width: double.infinity,
+                clipBehavior: Clip.antiAlias,
                 decoration: BoxDecoration(
                   color: _tileBg[colorIndex],
                   borderRadius: BorderRadius.circular(16),
                 ),
-                child: Icon(
+                child: photo.bytes != null
+                    ? Image.memory(photo.bytes!, fit: BoxFit.cover)
+                    : Icon(
                   _photoIcons[colorIndex],
                   size: 80,
                   color: _tileFg[colorIndex],
@@ -972,6 +1019,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
       onTap: () => _preview(index),
       borderRadius: BorderRadius.circular(15),
       child: Container(
+        clipBehavior: Clip.antiAlias,
         decoration: BoxDecoration(
           color: _tileBg[colorIndex],
           borderRadius: BorderRadius.circular(15),
@@ -982,13 +1030,18 @@ class _PhotosScreenState extends State<PhotosScreen> {
         ),
         child: Stack(
           children: [
-            Center(
-              child: Icon(
-                _photoIcons[colorIndex],
-                color: _tileFg[colorIndex],
-                size: 34,
+            if (photo.bytes != null)
+              Positioned.fill(
+                child: Image.memory(photo.bytes!, fit: BoxFit.cover),
+              )
+            else
+              Center(
+                child: Icon(
+                  _photoIcons[colorIndex],
+                  color: _tileFg[colorIndex],
+                  size: 34,
+                ),
               ),
-            ),
             Positioned(
               top: 5,
               right: 5,

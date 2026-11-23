@@ -1,16 +1,23 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+import '../state/app_state.dart';
 
 import 'parent_home_screen.dart' show ParentColors;
 
 /// One notification row shown on the Parent notification screen.
 class ParentNotifItem {
-  const ParentNotifItem(this.icon, this.text, this.tab);
+  const ParentNotifItem(this.icon, this.text, this.tab, {String? key})
+      : key = key ?? text;
 
   final IconData icon;
   final String text;
 
+  /// Read / clear ची नोंद ठेवण्यासाठी unique key (तारीख / id सहित).
+  final String key;
+
   /// Bottom tab to open when tapped:
-  /// 0 Home, 1 Photos, 2 Diary, 3 Circulars, 4 Fees
+  /// 0 Home, 1 Photos, 2 Diary, 3 Circulars, 4 Fees, 5 Messages
   final int tab;
 }
 
@@ -41,6 +48,40 @@ class ParentNotificationScreen extends StatefulWidget {
       _ParentNotificationScreenState();
 }
 
+/// Read / cleared notifications फोन मध्ये save (मुलानुसार) — नाहीतर screen
+/// पुन्हा उघडल्यावर सगळं परत "unread" दिसायचं.
+class ParentNotifStore {
+  static String _read(String c) => 'parent_notif_read_$c';
+  static String _gone(String c) => 'parent_notif_gone_$c';
+
+  static Future<(Set<String>, Set<String>)> load(String childId) async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      return (
+      (p.getStringList(_read(childId)) ?? const <String>[]).toSet(),
+      (p.getStringList(_gone(childId)) ?? const <String>[]).toSet(),
+      );
+    } catch (_) {
+      return (<String>{}, <String>{});
+    }
+  }
+
+  static Future<void> save(
+      String childId, Set<String> read, Set<String> gone) async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.setStringList(_read(childId), read.toList());
+      await p.setStringList(_gone(childId), gone.toList());
+    } catch (_) {}
+  }
+
+  /// Badge साठी: read किंवा cleared झालेले सगळे.
+  static Future<Set<String>> hidden(String childId) async {
+    final r = await load(childId);
+    return {...r.$1, ...r.$2};
+  }
+}
+
 /// Style for each notification type (based on the tab it opens).
 class _Kind {
   const _Kind(this.label, this.fg, this.bg);
@@ -54,6 +95,7 @@ const Map<int, _Kind> _kinds = {
   2: _Kind('Class diary', Color(0xFF2F8877), Color(0xFFDDF2EC)),
   3: _Kind('Circulars', Color(0xFF3F7FC4), Color(0xFFE3F1FF)),
   4: _Kind('Fees', Color(0xFFD9822B), Color(0xFFFFF0D9)),
+  5: _Kind('Messages', Color(0xFF7B5CD6), Color(0xFFEFE8FF)),
 };
 
 const _Kind _defaultKind =
@@ -65,6 +107,36 @@ class _ParentNotificationScreenState extends State<ParentNotificationScreen> {
 
   /// null = All, -1 = Unread, otherwise a tab number.
   int? _filter;
+
+  String get _childId => AppState.instance.child.id;
+
+  @override
+  void initState() {
+    super.initState();
+    _restore();
+  }
+
+  Future<void> _restore() async {
+    final saved = await ParentNotifStore.load(_childId);
+    if (!mounted) return;
+    setState(() {
+      for (var i = 0; i < widget.items.length; i++) {
+        if (saved.$1.contains(widget.items[i].key)) _read.add(i);
+        if (saved.$2.contains(widget.items[i].key)) _dismissed.add(i);
+      }
+    });
+  }
+
+  void _persist() {
+    ParentNotifStore.save(
+      _childId,
+      {for (final i in _read) if (i < widget.items.length) widget.items[i].key},
+      {
+        for (final i in _dismissed)
+          if (i < widget.items.length) widget.items[i].key
+      },
+    );
+  }
 
   // ---------- helpers ----------
   _Kind _kind(int tab) => _kinds[tab] ?? _defaultKind;
@@ -85,6 +157,7 @@ class _ParentNotificationScreenState extends State<ParentNotificationScreen> {
 
   void _markAllRead() {
     setState(() => _read.addAll(_alive));
+    _persist();
   }
 
   void _snackUndo(String text, VoidCallback undo) {
@@ -101,8 +174,10 @@ class _ParentNotificationScreenState extends State<ParentNotificationScreen> {
 
   void _dismiss(int index) {
     setState(() => _dismissed.add(index));
+    _persist();
     _snackUndo('Notification removed', () {
       if (mounted) setState(() => _dismissed.remove(index));
+      _persist();
     });
   }
 
@@ -110,14 +185,17 @@ class _ParentNotificationScreenState extends State<ParentNotificationScreen> {
     final removed = _visible;
     if (removed.isEmpty) return;
     setState(() => _dismissed.addAll(removed));
+    _persist();
     _snackUndo('Cleared ${removed.length} notifications', () {
       if (mounted) setState(() => _dismissed.removeAll(removed));
+      _persist();
     });
   }
 
   void _open(int index) {
     final n = widget.items[index];
     setState(() => _read.add(index));
+    _persist();
     Navigator.pop(context);
     widget.onOpenTab(n.tab);
   }

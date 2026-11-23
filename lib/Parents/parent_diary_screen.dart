@@ -37,6 +37,26 @@ class _ParentDiaryScreenState extends State<ParentDiaryScreen> {
   /// "Send tomorrow" items the parent has packed.
   final Set<String> _packed = {};
 
+  String get _doneKey => 'parent_diary_done_${AppState.instance.child.id}';
+  String get _packedKey => 'parent_diary_packed_${AppState.instance.child.id}';
+
+  @override
+  void initState() {
+    super.initState();
+    _restoreTicks();
+  }
+
+  /// App बंद करून उघडल्यावरही parent चे ticks तसेच राहतात.
+  Future<void> _restoreTicks() async {
+    final d = await ParentPrefs.load(_doneKey);
+    final p = await ParentPrefs.load(_packedKey);
+    if (!mounted) return;
+    setState(() {
+      _done.addAll(d);
+      _packed.addAll(p);
+    });
+  }
+
   // ---------------------------------------------------------------
   // SUBJECT LOOK
   // ---------------------------------------------------------------
@@ -741,6 +761,7 @@ class _ParentDiaryScreenState extends State<ParentDiaryScreen> {
     return GestureDetector(
       onTap: () => setState(() {
         if (!_done.add(k)) _done.remove(k);
+        ParentPrefs.save(_doneKey, _done);
       }),
       child: Container(
         width: double.infinity,
@@ -872,6 +893,7 @@ class _ParentDiaryScreenState extends State<ParentDiaryScreen> {
     return GestureDetector(
       onTap: () => setState(() {
         if (!_packed.add(k)) _packed.remove(k);
+        ParentPrefs.save(_packedKey, _packed);
       }),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 160),

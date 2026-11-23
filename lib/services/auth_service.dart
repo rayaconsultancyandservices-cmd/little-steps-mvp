@@ -83,15 +83,12 @@ class AuthService {
         'employeeId': employeeId.trim(),
         'className': className,
         'classId': classId,
+        // Admin approve करेपर्यंत Teacher ला data दिसत नाही (Firestore rules).
+        'approved': false,
         'createdAt': Timestamp.now(),
       });
-
-      await _db.collection('classes').doc(classId).set({
-        'teacherName': name.trim(),
-        'className': className,
-        'schoolName': school.trim(),
-        'teacherUid': user.uid,
-      }, SetOptions(merge: true));
+      // `classes/{classId}` इथे बनवत नाही: approve होईपर्यंत rules लिहू देत नाहीत.
+      // Admin approve करताना (किंवा approve नंतरच्या पहिल्या login ला) तो आपोआप बनतो.
 
       // Register झाल्यावर login screen वर परत जातो, म्हणून sign out.
       await _auth.signOut();
@@ -158,6 +155,7 @@ class AuthService {
       final user = _auth.currentUser!;
       final udoc = await _db.collection('users').doc(user.uid).get();
       if (!udoc.exists) {
+        // बदल: email verification link आता लागत नाही — email + password ने थेट login.
         final linkErr = await _linkParent(user, mail);
         if (linkErr != null) {
           // link नसेल तर नवीन बनलेलं account काढतो.

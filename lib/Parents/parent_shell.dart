@@ -5,8 +5,10 @@ import 'package:little_steps_mvp/Parents/parent_child_profile_screen.dart';
 import 'package:little_steps_mvp/Parents/parent_diary_screen.dart';
 import 'package:little_steps_mvp/Parents/parent_fees_screen.dart';
 import 'package:little_steps_mvp/Parents/parent_home_screen.dart';
+import 'package:little_steps_mvp/Parents/parent_message_screen.dart';
 import 'package:little_steps_mvp/Parents/parent_photos_screen.dart';
 
+import '../services/auth_service.dart';
 import '../state/app_state.dart';
 import 'parent_login_screen.dart';
 
@@ -30,7 +32,12 @@ class _ParentShellState extends State<ParentShell> {
   /// fee banner, notifications). Fees is no longer a tab, so open it
   /// as its own screen with a back arrow.
   void _openFromHome(int i) {
-    if (i == 4) {
+    if (i == 5) {
+      // Notification मधून "Message from teacher" उघडतो.
+      Navigator.of(context).push(
+        MaterialPageRoute<void>(builder: (_) => const ParentMessageScreen()),
+      );
+    } else if (i == 4) {
       Navigator.of(context).push(
         MaterialPageRoute<void>(
           builder: (_) => Scaffold(
@@ -84,6 +91,9 @@ class _ParentShellState extends State<ParentShell> {
       ),
     );
     if (ok != true || !mounted) return;
+    // Firebase session + live streams खऱ्या अर्थाने बंद करतो (आधी फक्त screen बदलत होता).
+    await AuthService.signOut();
+    if (!mounted) return;
     Navigator.of(context).pushAndRemoveUntil(
       MaterialPageRoute<void>(builder: (_) => const ParentLoginScreen()),
           (route) => false,
