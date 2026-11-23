@@ -1,5 +1,7 @@
 plugins {
     id("com.android.application")
+    // Firebase: google-services.json वाचण्यासाठी हा plugin लागतो.
+    id("com.google.gms.google-services")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
@@ -17,13 +19,14 @@ android {
     defaultConfig {
         // हा आयडी flavors मध्ये override होतो, म्हणून तसाच ठेवला आहे.
         applicationId = "com.example.little_steps_mvp"
-        minSdk = flutter.minSdkVersion
+        // Firebase (Auth/Firestore) साठी किमान 23 लागतो.
+        minSdk = maxOf(flutter.minSdkVersion, 23)
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
     }
 
-    // ===== नवीन: Teacher आणि Parent चे वेगळे flavors =====
+    // ===== Teacher आणि Parent चे वेगळे flavors =====
     flavorDimensions += "role"
 
     productFlavors {

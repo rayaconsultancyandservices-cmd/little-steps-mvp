@@ -10,9 +10,11 @@ const String _kAbsent = 'A';
 const String _kLate = 'L';
 
 class _Student {
-  _Student(this.name);
+  _Student(this.id, this.name);
 
+  final String id; // Firestore student id
   final String name;
+  bool touched = false; // Teacher ने या session मध्ये स्वतः mark केलं का
   String? status;
   String? reason; // absence reason
   int? aiConfidence;
@@ -47,30 +49,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
   final TextEditingController searchController = TextEditingController();
 
-  final List<_Student> students = <String>[
-    'Aarav Mehta',
-    'Diya Iyer',
-    'Kabir Sharma',
-    'Saanvi Rao',
-    'Vihaan Joshi',
-    'Anaya Patil',
-    'Vivaan Deshmukh',
-    'Advik Shah',
-    'Ira Kulkarni',
-    'Reyansh More',
-    'Myra Pawar',
-    'Arjun Singh',
-    'Aadhya Kale',
-    'Kiara Mehta',
-    'Rudra Jadhav',
-    'Pari Gupta',
-    'Atharv Shinde',
-    'Sara Khan',
-    'Omkar Pawar',
-    'Ishaan More',
-    'Riya Patil',
-    'Vedant Joshi',
-  ].map(_Student.new).toList();
+  // Firestore मधील खरी students list (AppState.students) इथे mark सह ठेवली जाते.
+  final List<_Student> students = [];
 
   int selectedFilter = 0;
   bool aiScanned = false;
@@ -94,9 +74,49 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   int get total => students.length;
 
   @override
+  void initState() {
+    super.initState();
+    _rebuildStudents();
+    AppState.instance.addListener(_sync);
+  }
+
+  @override
   void dispose() {
+    AppState.instance.removeListener(_sync);
     searchController.dispose();
     super.dispose();
+  }
+
+  // ---------------------------------------------------------------
+  // REAL STUDENTS (Firestore)
+  // ---------------------------------------------------------------
+  /// AppState.students मधून list बनवतो. Teacher ने आधी केलेले marks तसेच राहतात;
+  /// आज आधीच save केलेला attendance असेल तर तो दिसतो.
+  void _rebuildStudents() {
+    final app = AppState.instance;
+    final old = {for (final x in students) x.id: x};
+    final next = <_Student>[];
+
+    for (final c in app.students) {
+      final st = old[c.id] ?? _Student(c.id, c.name);
+      if (!st.touched && st.status == null) {
+        final saved = app.attendanceStatuses[c.id];
+        if (saved != null && saved.isNotEmpty) {
+          st.status = saved;
+          st.reason = app.attendanceReasons[c.id];
+        }
+      }
+      next.add(st);
+    }
+
+    students
+      ..clear()
+      ..addAll(next);
+  }
+
+  void _sync() {
+    if (!mounted) return;
+    setState(_rebuildStudents);
   }
 
   // ---------------------------------------------------------------
@@ -105,6 +125,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   void markStudent(_Student student, String status) {
     HapticFeedback.selectionClick();
     setState(() {
+      student.touched = true;
       // Tap the same button again to un-mark.
       if (student.status == status) {
         student.status = null;
@@ -191,11 +212,14 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     );
 
     if (picked == null) return;
-    setState(() => student.reason = picked.isEmpty ? null : picked);
+    setState(() {
+      student.touched = true;
+      student.reason = picked.isEmpty ? null : picked;
+    });
   }
 
   // ---------------------------------------------------------------
-  // AI CAMERA DEMO
+  // (वापरात नाही) जुना AI CAMERA DEMO – खऱ्या camera/AI integration नंतर इथे येईल
   // ---------------------------------------------------------------
   Future<void> scanWithCamera() async {
     if (isScanning) return;
@@ -256,6 +280,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       for (int i = 0; i < students.length; i++) {
         final student = students[i];
 
+        student.touched = true;
         student.aiUnsure = false;
         student.notSeen = false;
         student.reason = null;
@@ -290,6 +315,11 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   // ---------------------------------------------------------------
   Future<void> saveAttendance() async {
     if (isSaving) return;
+
+    if (students.isEmpty) {
+      _snack('Add students first (tap the + icon at the top).');
+      return;
+    }
 
     if (notMarked > 0) {
       final result = await showDialog<bool>(
@@ -328,6 +358,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       setState(() {
         for (final student in students) {
           if (student.status == null) {
+            student.touched = true;
             student.status = _kAbsent;
             student.aiUnsure = false;
             student.notSeen = false;
@@ -338,23 +369,31 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
     setState(() => isSaving = true);
 
-    await Future<void>.delayed(const Duration(milliseconds: 400));
-
-    if (!mounted) return;
-
-    // FIX 2: प्रत्येक मुलाची खरी स्थिती (P / A / L) AppState ला पाठवली जाते.
-    // पूर्वी हा map पाठवला जात नव्हता, त्यामुळे Parent ला Aarav
-    // नेहमी "Present" दिसायचा, तो Absent असला तरी.
+    // प्रत्येक मुलाची खरी स्थिती (P / A / L) आणि absence reason Firestore मध्ये
+    // save होते; Parent app ला फक्त त्याच्या मुलाची स्थिती दिसते.
     final statuses = <String, String?>{
-      for (final s in students) s.name: s.status,
+      for (final s in students) s.id: s.status,
+    };
+    final reasons = <String, String>{
+      for (final s in students)
+        if (s.reason != null) s.id: s.reason!,
     };
 
-    AppState.instance.saveAttendance(
-      present: present,
-      absent: absent,
-      statuses: statuses,
-    );
+    try {
+      await AppState.instance.saveAttendance(
+        present: present,
+        absent: absent,
+        statuses: statuses,
+        reasons: reasons,
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => isSaving = false);
+      _snack('Could not save attendance: $e');
+      return;
+    }
 
+    if (!mounted) return;
     setState(() => isSaving = false);
 
     ScaffoldMessenger.of(context).showSnackBar(
@@ -418,6 +457,13 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         subtitle:
         '${AppState.instance.className} · ${AppState.dateLabel(DateTime.now())}',
         onBack: widget.onBack,
+        actions: [
+          IconButton(
+            tooltip: 'Add student',
+            onPressed: _openAddStudent,
+            icon: const Icon(Icons.person_add_alt_1_rounded, color: primary),
+          ),
+        ],
       ),
       body: Column(
         children: [
@@ -460,11 +506,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                   ],
                 ),
 
-                const SizedBox(height: 12),
-
-                // AI SCAN (compact)
-                _buildScanCard(),
-
+                // खोटा 'AI Classroom Scan' काढला (तो random मुलं present दाखवत होता).
                 const SizedBox(height: 18),
 
                 // SEARCH
@@ -522,27 +564,35 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                         ),
                       ),
                       if (list.isEmpty)
-                        const Padding(
-                          padding: EdgeInsets.all(28),
+                        Padding(
+                          padding: const EdgeInsets.all(28),
                           child: Column(
                             children: [
                               Icon(
-                                Icons.search_off_rounded,
-                                color: Color(0xFFADB8B4),
+                                total == 0
+                                    ? Icons.group_add_rounded
+                                    : Icons.search_off_rounded,
+                                color: const Color(0xFFADB8B4),
                                 size: 35,
                               ),
-                              SizedBox(height: 8),
+                              const SizedBox(height: 8),
                               Text(
-                                'No students found',
-                                style: TextStyle(
+                                total == 0
+                                    ? 'No students yet'
+                                    : 'No students found',
+                                style: const TextStyle(
                                   fontWeight: FontWeight.w700,
                                   color: dark,
                                 ),
                               ),
-                              SizedBox(height: 4),
+                              const SizedBox(height: 4),
                               Text(
-                                'Try another name or filter.',
-                                style: TextStyle(fontSize: 11, color: muted),
+                                total == 0
+                                    ? 'Tap the + icon at the top to add your first student.'
+                                    : 'Try another name or filter.',
+                                textAlign: TextAlign.center,
+                                style:
+                                const TextStyle(fontSize: 11, color: muted),
                               ),
                             ],
                           ),
@@ -927,91 +977,167 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
     if (student.status == null) avatarText = primary;
 
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 200),
-      color: isAbsent
-          ? const Color(0xFFFFFAF9)
-          : isLate
-          ? const Color(0xFFFFFCF6)
-          : Colors.white,
-      padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 10),
-      child: Row(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(2),
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              border: Border.all(
-                color: student.status == null
-                    ? Colors.transparent
-                    : ring.withValues(alpha: 0.7),
-                width: 2,
-              ),
-            ),
-            child: CircleAvatar(
-              radius: 19,
-              backgroundColor: student.status == null
-                  ? const Color(0xFFE4F3EF)
-                  : ring.withValues(alpha: 0.13),
-              child: Text(
-                initials(student.name),
-                style: TextStyle(
-                  fontSize: 11.5,
-                  fontWeight: FontWeight.w800,
-                  color: student.status == null ? avatarText : ring,
+    return GestureDetector(
+      onLongPress: () => _confirmRemove(student),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        color: isAbsent
+            ? const Color(0xFFFFFAF9)
+            : isLate
+            ? const Color(0xFFFFFCF6)
+            : Colors.white,
+        padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 10),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(2),
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: student.status == null
+                      ? Colors.transparent
+                      : ring.withValues(alpha: 0.7),
+                  width: 2,
                 ),
               ),
-            ),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  student.name,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 12,
-                    color: dark,
+              child: CircleAvatar(
+                radius: 19,
+                backgroundColor: student.status == null
+                    ? const Color(0xFFE4F3EF)
+                    : ring.withValues(alpha: 0.13),
+                child: Text(
+                  initials(student.name),
+                  style: TextStyle(
+                    fontSize: 11.5,
                     fontWeight: FontWeight.w800,
+                    color: student.status == null ? avatarText : ring,
                   ),
                 ),
-                const SizedBox(height: 4),
-                GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTap: isAbsent ? () => _pickReason(student) : null,
-                  child: Text(
-                    subtitle,
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    student.name,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 9.5,
-                      color: subtitleColor,
-                      fontWeight: FontWeight.w700,
-                      decoration: isAbsent && student.reason == null
-                          ? TextDecoration.underline
-                          : null,
-                      decorationColor: subtitleColor,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: dark,
+                      fontWeight: FontWeight.w800,
                     ),
                   ),
-                ),
-              ],
+                  const SizedBox(height: 4),
+                  GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: isAbsent ? () => _pickReason(student) : null,
+                    child: Text(
+                      subtitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 9.5,
+                        color: subtitleColor,
+                        fontWeight: FontWeight.w700,
+                        decoration: isAbsent && student.reason == null
+                            ? TextDecoration.underline
+                            : null,
+                        decorationColor: subtitleColor,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ),
+            const SizedBox(width: 6),
+            _statusButton('P', isPresent, green,
+                    () => markStudent(student, _kPresent)),
+            const SizedBox(width: 6),
+            _statusButton(
+                'A', isAbsent, red, () => markStudent(student, _kAbsent)),
+            const SizedBox(width: 6),
+            _statusButton(
+                'L', isLate, orange, () => markStudent(student, _kLate)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------
+  // ADD / REMOVE STUDENT  (नवीन: Teacher स्वतः मुलं जोडतो)
+  // ---------------------------------------------------------------
+  void _snack(String text) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(content: Text(text), behavior: SnackBarBehavior.floating),
+      );
+  }
+
+  Future<void> _openAddStudent() async {
+    final child = await showModalBottomSheet<ChildInfo>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (_) => _AddStudentSheet(nextRoll: students.length + 1),
+    );
+    if (child == null || !mounted) return;
+
+    try {
+      await AppState.instance.addStudent(child);
+      if (!mounted) return;
+      _snack(
+        '${child.name} added. Parent can login with ${child.parentEmail.trim().toLowerCase()}',
+      );
+    } catch (e) {
+      if (!mounted) return;
+      _snack('Could not add student: $e');
+    }
+  }
+
+  Future<void> _confirmRemove(_Student student) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text(
+          'Remove student?',
+          style: TextStyle(fontWeight: FontWeight.w800),
+        ),
+        content: Text(
+          '${student.name} will be removed from the class. '
+              'The parent will no longer be able to see this child.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
           ),
-          const SizedBox(width: 6),
-          _statusButton('P', isPresent, green,
-                  () => markStudent(student, _kPresent)),
-          const SizedBox(width: 6),
-          _statusButton(
-              'A', isAbsent, red, () => markStudent(student, _kAbsent)),
-          const SizedBox(width: 6),
-          _statusButton(
-              'L', isLate, orange, () => markStudent(student, _kLate)),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: red,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Remove'),
+          ),
         ],
       ),
     );
+    if (ok != true || !mounted) return;
+    try {
+      await AppState.instance.deleteStudent(student.id);
+    } catch (e) {
+      if (!mounted) return;
+      _snack('Could not remove student: $e');
+    }
   }
 
   Widget _statusButton(
@@ -1104,6 +1230,291 @@ class _LegendDot extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+// =====================================================================
+// ADD STUDENT SHEET
+// =====================================================================
+class _AddStudentSheet extends StatefulWidget {
+  const _AddStudentSheet({required this.nextRoll});
+
+  final int nextRoll;
+
+  @override
+  State<_AddStudentSheet> createState() => _AddStudentSheetState();
+}
+
+class _AddStudentSheetState extends State<_AddStudentSheet> {
+  static const Color dark = Color(0xFF183B45);
+  static const Color primary = Color(0xFF168C80);
+  static const Color muted = Color(0xFF84918D);
+
+  final _formKey = GlobalKey<FormState>();
+  final _name = TextEditingController();
+  final _roll = TextEditingController();
+  final _parent = TextEditingController();
+  final _email = TextEditingController();
+  final _phone = TextEditingController();
+  final _allergy = TextEditingController();
+
+  DateTime? _dob;
+  String _gender = 'Boy';
+  String? _blood;
+
+  static const _bloodGroups = [
+    'A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-',
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _roll.text = '${widget.nextRoll}';
+  }
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _roll.dispose();
+    _parent.dispose();
+    _email.dispose();
+    _phone.dispose();
+    _allergy.dispose();
+    super.dispose();
+  }
+
+  InputDecoration _dec(String label, {String? hint}) => InputDecoration(
+    labelText: label,
+    hintText: hint,
+    filled: true,
+    fillColor: const Color(0xFFF4F9F8),
+    isDense: true,
+    contentPadding:
+    const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+    border: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(12),
+      borderSide: const BorderSide(color: Color(0xFFD4E5E1)),
+    ),
+    enabledBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(12),
+      borderSide: const BorderSide(color: Color(0xFFD4E5E1)),
+    ),
+    focusedBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(12),
+      borderSide: const BorderSide(color: primary, width: 1.4),
+    ),
+  );
+
+  Future<void> _pickDob() async {
+    final now = DateTime.now();
+    final d = await showDatePicker(
+      context: context,
+      initialDate: _dob ?? DateTime(now.year - 3, 1, 1),
+      firstDate: DateTime(now.year - 10),
+      lastDate: now,
+    );
+    if (d != null) setState(() => _dob = d);
+  }
+
+  void _submit() {
+    if (!_formKey.currentState!.validate()) return;
+    final phone = _phone.text.trim();
+    Navigator.pop(
+      context,
+      ChildInfo(
+        name: _name.text.trim(),
+        className: '', // AppState.addStudent() class चं नाव स्वतः भरतो
+        rollNo: int.tryParse(_roll.text.trim()) ?? widget.nextRoll,
+        dob: _dob ?? DateTime(DateTime.now().year - 3, 1, 1),
+        bloodGroup: _blood ?? '',
+        gender: _gender,
+        allergyNote: _allergy.text.trim(),
+        parentName: _parent.text.trim(),
+        parentEmail: _email.text.trim().toLowerCase(),
+        pickupNote: '',
+        contacts: phone.isEmpty
+            ? const []
+            : [ParentContact(_parent.text.trim(), 'Parent', phone)],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bottom = MediaQuery.of(context).viewInsets.bottom;
+
+    return Padding(
+      padding: EdgeInsets.fromLTRB(18, 14, 18, 14 + bottom),
+      child: SafeArea(
+        top: false,
+        child: SingleChildScrollView(
+          child: Form(
+            key: _formKey,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    height: 4,
+                    width: 40,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFDDE5E2),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  'Add student',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                    color: dark,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                const Text(
+                  'Parent can login with the email you enter here.',
+                  style: TextStyle(fontSize: 11, color: muted),
+                ),
+                const SizedBox(height: 14),
+                TextFormField(
+                  controller: _name,
+                  textCapitalization: TextCapitalization.words,
+                  decoration: _dec('Student name'),
+                  validator: (v) => (v == null || v.trim().length < 2)
+                      ? 'Enter student name'
+                      : null,
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextFormField(
+                        controller: _roll,
+                        keyboardType: TextInputType.number,
+                        inputFormatters: [
+                          FilteringTextInputFormatter.digitsOnly,
+                        ],
+                        decoration: _dec('Roll no'),
+                        validator: (v) =>
+                        (v == null || v.trim().isEmpty) ? 'Required' : null,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      flex: 2,
+                      child: InkWell(
+                        onTap: _pickDob,
+                        borderRadius: BorderRadius.circular(12),
+                        child: InputDecorator(
+                          decoration: _dec('Date of birth'),
+                          child: Text(
+                            _dob == null
+                                ? 'Select'
+                                : '${_dob!.day} ${AppState.monthShort(_dob!.month)} ${_dob!.year}',
+                            style: TextStyle(
+                              fontSize: 14,
+                              color: _dob == null ? muted : dark,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    for (final g in const ['Boy', 'Girl']) ...[
+                      ChoiceChip(
+                        label: Text(g),
+                        selected: _gender == g,
+                        showCheckmark: false,
+                        selectedColor: primary,
+                        backgroundColor: const Color(0xFFE4F3EF),
+                        side: BorderSide.none,
+                        labelStyle: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: _gender == g ? Colors.white : primary,
+                        ),
+                        onSelected: (_) => setState(() => _gender = g),
+                      ),
+                      const SizedBox(width: 8),
+                    ],
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: DropdownButtonFormField<String>(
+                        initialValue: _blood,
+                        decoration: _dec('Blood group'),
+                        items: [
+                          for (final b in _bloodGroups)
+                            DropdownMenuItem(value: b, child: Text(b)),
+                        ],
+                        onChanged: (v) => setState(() => _blood = v),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                TextFormField(
+                  controller: _parent,
+                  textCapitalization: TextCapitalization.words,
+                  decoration: _dec('Parent name'),
+                  validator: (v) => (v == null || v.trim().length < 2)
+                      ? 'Enter parent name'
+                      : null,
+                ),
+                const SizedBox(height: 10),
+                TextFormField(
+                  controller: _email,
+                  keyboardType: TextInputType.emailAddress,
+                  decoration: _dec('Parent email (used for login)'),
+                  validator: (v) {
+                    final t = (v ?? '').trim();
+                    final ok = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(t);
+                    return ok ? null : 'Enter a valid email';
+                  },
+                ),
+                const SizedBox(height: 10),
+                TextFormField(
+                  controller: _phone,
+                  keyboardType: TextInputType.phone,
+                  decoration: _dec('Parent phone (optional)'),
+                ),
+                const SizedBox(height: 10),
+                TextFormField(
+                  controller: _allergy,
+                  decoration: _dec('Allergy / medical note (optional)'),
+                ),
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  height: 46,
+                  child: ElevatedButton(
+                    onPressed: _submit,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: primary,
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                    ),
+                    child: const Text(
+                      'Add student',
+                      style: TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

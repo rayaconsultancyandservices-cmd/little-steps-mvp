@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../services/auth_service.dart';
+
 class RegisterScreen extends StatefulWidget {
   const RegisterScreen({super.key});
 
@@ -122,13 +124,31 @@ class _RegisterScreenState extends State<RegisterScreen> {
       return;
     }
 
-    // Demo registration. Firebase Authentication is not connected yet.
     setState(() => isLoading = true);
 
-    await Future.delayed(const Duration(milliseconds: 700));
+    // Firebase Authentication मध्ये खरं Teacher account + class बनतो.
+    final error = await AuthService.registerTeacher(
+      name: nameController.text,
+      email: emailController.text,
+      phone: phoneController.text,
+      school: schoolController.text,
+      employeeId: employeeController.text,
+      className: selectedClass ?? '',
+      password: passwordController.text,
+    );
     if (!mounted) return;
 
     setState(() => isLoading = false);
+
+    if (error != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(error),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
 
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(

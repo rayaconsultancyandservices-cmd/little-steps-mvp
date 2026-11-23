@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../state/app_state.dart';
 import '../theme/app_colors.dart';
 import 'login_screen.dart';
+import '../services/auth_service.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key, required this.onNavigate});
@@ -735,8 +736,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _weeklyChart(AppState s, DateTime now) {
     const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
-    const sample = [94, 91, 96, 89, 93];
-
     final todayIndex = now.weekday - 1;
     final total = s.presentCount + s.absentCount;
     final todayValue = s.attendanceSaved && total > 0
@@ -750,6 +749,7 @@ class _HomeScreenState extends State<HomeScreen> {
         crossAxisAlignment: CrossAxisAlignment.end,
         children: List.generate(days.length, (i) {
           final isToday = i == todayIndex;
+          // खरा attendance (Firestore) – डेटा नसेल तर 0 (म्हणजे '-')
           int value;
 
           if (isToday) {
@@ -757,7 +757,7 @@ class _HomeScreenState extends State<HomeScreen> {
           } else if (todayIndex <= 4 && i > todayIndex) {
             value = 0;
           } else {
-            value = sample[i];
+            value = s.weeklyPercent(i);
           }
 
           final color = isToday ? primary : const Color(0xFFBFE3DA);
@@ -808,38 +808,12 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildEvents(AppState s, DateTime now) {
     final events = <_EventItem>[];
 
-    for (final c in s.circulars) {
-      if (c.eventDate != null) {
-        events.add(_EventItem(
-          title: c.title,
-          date: c.eventDate!,
-          tag: c.category,
-        ));
-      }
-      if (events.length >= 3) break;
-    }
-
-    final samples = <_EventItem>[
-      _EventItem(
-        title: 'Parent–Teacher Meet',
-        date: now.add(const Duration(days: 6)),
-        tag: 'Meeting',
-      ),
-      _EventItem(
-        title: 'Annual Day Practice',
-        date: now.add(const Duration(days: 12)),
-        tag: 'Event',
-      ),
-      _EventItem(
-        title: 'Winter Break Begins',
-        date: now.add(const Duration(days: 27)),
-        tag: 'Holiday',
-      ),
-    ];
-
-    for (final e in samples) {
+    // खरे upcoming events: Firestore events + event date असलेले circulars
+    final today = DateTime(now.year, now.month, now.day);
+    for (final e in s.events) {
+      if (e.date.isBefore(today)) continue;
+      events.add(_EventItem(title: e.title, date: e.date, tag: e.category));
       if (events.length >= 4) break;
-      events.add(e);
     }
 
     const palette = [
@@ -860,7 +834,9 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
         const SizedBox(height: 11),
         Column(
-          children: List.generate(events.length, (i) {
+          children: events.isEmpty
+              ? [_emptyNote('No upcoming events yet.')]
+              : List.generate(events.length, (i) {
             final e = events[i];
             final color = palette[i % palette.length][0];
             final light = palette[i % palette.length][1];
@@ -1006,35 +982,48 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // Latest two parent conversations – same data/look as the Messages screen.
-  static const List<_HomeMessage> _latestMessages = [
-    _HomeMessage(
-      name: 'Priya Mehta',
-      child: 'Mother of Aarav',
-      message: 'Thank you ma’am!',
-      time: '12:20 PM',
-      unread: 0,
-      online: true,
-      avatarColor: Color(0xFFFFE0D9),
-    ),
-    _HomeMessage(
-      name: 'Vikas Iyer',
-      child: 'Father of Diya',
-      message: 'Diya will come late tomorrow',
-      time: '11:05 AM',
-      unread: 2,
-      online: true,
-      avatarColor: Color(0xFFFFF0D9),
-    ),
+  static const List<Color> _msgColors = [
+    Color(0xFFFFE0D9),
+    Color(0xFFFFF0D9),
+    Color(0xFFDDF2EC),
+    Color(0xFFE6E0FA),
   ];
 
+  Widget _emptyNote(String text) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 18),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(15),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Text(
+        text,
+        textAlign: TextAlign.center,
+        style: const TextStyle(fontSize: 11, color: muted),
+      ),
+    );
+  }
+
+  // खऱ्या Firestore threads मधून शेवटचे दोन parent संवाद.
   Widget _buildMessages(AppState s) {
-    // Keep the unread badge in sync with the global unread count,
-    // so it disappears once messages are read in the Messages screen.
-    final messages = _latestMessages.map((m) {
-      final unread = m.unread > s.unreadMessages ? s.unreadMessages : m.unread;
-      return m.copyWith(unread: unread);
-    }).toList();
+    final latest = s.threadList.take(2).toList();
+    final messages = <_HomeMessage>[
+      for (var i = 0; i < latest.length; i++)
+        _HomeMessage(
+          name: latest[i].parentName.isEmpty
+              ? 'Parent'
+              : latest[i].parentName,
+          child: 'Parent of ${latest[i].studentName}',
+          message: latest[i].lastText,
+          time: latest[i].lastAt == null
+              ? ''
+              : AppState.timeLabel(latest[i].lastAt!),
+          unread: latest[i].teacherUnread,
+          avatarColor: _msgColors[i % _msgColors.length],
+        ),
+    ];
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1046,8 +1035,11 @@ class _HomeScreenState extends State<HomeScreen> {
           onTrailingTap: () => _go(5),
         ),
         const SizedBox(height: 14),
-        for (var i = 0; i < messages.length; i++)
-          _messageTile(messages[i], isLast: i == messages.length - 1),
+        if (messages.isEmpty)
+          _emptyNote('No messages from parents yet.')
+        else
+          for (var i = 0; i < messages.length; i++)
+            _messageTile(messages[i], isLast: i == messages.length - 1),
       ],
     );
   }

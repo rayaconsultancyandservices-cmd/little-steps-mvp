@@ -6,6 +6,7 @@ import '../widgets/page_app_bar.dart';
 
 class _Parent {
   _Parent({
+    required this.studentId,
     required this.name,
     required this.child,
     required this.message,
@@ -14,6 +15,7 @@ class _Parent {
     this.online = false,
   });
 
+  final String studentId; // thread key (Firestore students/{id})
   final String name;
   final String child;
   String message;
@@ -48,36 +50,42 @@ class _MessagesScreenState extends State<MessagesScreen> {
 
   int _filter = 0;
 
-  final List<_Parent> _parents = [
-    _Parent(
-      name: 'Priya Mehta',
-      child: 'Mother of Aarav',
-      message: 'Thank you ma’am!',
-      time: '12:20 PM',
-      online: true,
-    ),
-    _Parent(
-      name: 'Vikas Iyer',
-      child: 'Father of Diya',
-      message: 'Diya will come late tomorrow',
-      time: '11:05 AM',
-      unread: 2,
-      online: true,
-    ),
-    _Parent(
-      name: 'Ritu Sharma',
-      child: 'Mother of Kabir',
-      message: 'Is there a holiday on Friday?',
-      time: '10:40 AM',
-      unread: 1,
-    ),
-    _Parent(
-      name: 'Sneha Rao',
-      child: 'Mother of Saanvi',
-      message: 'Photos are lovely, thanks!',
-      time: 'Yesterday',
-    ),
-  ];
+  // खऱ्या Firestore data मधून parent list: class चे students + त्यांचे threads.
+  // ज्या पालकांनी / teacher ने अजून chat सुरू केली नाही त्यांचाही row दिसतो.
+  List<_Parent> get _parents {
+    final app = AppState.instance;
+    final rows = <_Parent>[];
+    final times = <String, DateTime?>{};
+
+    for (final st in app.students) {
+      final meta = app.metaFor(st.id);
+      final parentName = st.parentName.isNotEmpty
+          ? st.parentName
+          : (meta?.parentName ?? '');
+      rows.add(_Parent(
+        studentId: st.id,
+        name: parentName.isEmpty ? 'Parent of ${st.name}' : parentName,
+        child: 'Parent of ${st.name}',
+        message: meta?.lastText.isNotEmpty == true
+            ? meta!.lastText
+            : 'No messages yet',
+        time: meta?.lastAt == null ? '' : AppState.timeLabel(meta!.lastAt!),
+        unread: meta?.teacherUnread ?? 0,
+      ));
+      times[st.id] = meta?.lastAt;
+    }
+
+    // शेवटचा संदेश असलेले वर, बाकी rollNo क्रमाने.
+    rows.sort((a, b) {
+      final ta = times[a.studentId];
+      final tb = times[b.studentId];
+      if (ta == null && tb == null) return 0;
+      if (ta == null) return 1;
+      if (tb == null) return -1;
+      return tb.compareTo(ta);
+    });
+    return rows;
+  }
 
   @override
   void dispose() {
@@ -96,39 +104,18 @@ class _MessagesScreenState extends State<MessagesScreen> {
   }
 
   void _open(_Parent parent) {
-    final unread = parent.unread;
-
-    if (unread > 0) {
-      setState(() => parent.unread = 0);
-      AppState.instance.markRead(unread);
-    }
+    AppState.instance.markThreadRead(parent.studentId);
 
     Navigator.push(
       context,
       MaterialPageRoute<void>(
         builder: (_) => ChatScreen(
+          studentId: parent.studentId,
           parentName: parent.name,
           childLabel: parent.child,
-          firstMessage: parent.message,
-          firstTime: parent.time,
         ),
       ),
-    ).then((_) {
-      if (mounted) setState(() {});
-    });
-  }
-
-  // FIX 8: यादीतला "शेवटचा संदेश" आणि वेळ AppState च्या chat मधून घेतो.
-  void _syncLast(_Parent parent) {
-    final thread = AppState.instance.thread(
-      parent.name,
-      seed: parent.message,
-      seedTime: parent.time,
     );
-    if (thread.isNotEmpty) {
-      parent.message = thread.last.text;
-      parent.time = thread.last.time;
-    }
   }
 
   @override
@@ -141,12 +128,10 @@ class _MessagesScreenState extends State<MessagesScreen> {
   }
 
   Widget _buildScreen(BuildContext context) {
-    for (final p in _parents) {
-      _syncLast(p);
-    }
+    final all = _parents;
     final query = _search.text.trim().toLowerCase();
 
-    final filtered = _parents.where((parent) {
+    final filtered = all.where((parent) {
       final matchesSearch =
           parent.name.toLowerCase().contains(query) ||
               parent.child.toLowerCase().contains(query) ||
@@ -561,16 +546,14 @@ class _Msg {
 class ChatScreen extends StatefulWidget {
   const ChatScreen({
     super.key,
+    required this.studentId,
     required this.parentName,
     this.childLabel = '',
-    this.firstMessage = 'Hello teacher!',
-    this.firstTime = '',
   });
 
+  final String studentId; // thread key
   final String parentName;
   final String childLabel;
-  final String firstMessage;
-  final String firstTime;
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -596,13 +579,9 @@ class _ChatScreenState extends State<ChatScreen> {
 
   // FIX 6: Chat आता AppState च्या shared thread मधून येतो
   // (Parent app चा ParentMessageScreen हाच thread वापरतो).
-  // Parent चा पहिला संदेश seed म्हणून थ्रेडमध्ये ठेवला जातो.
+
   List<_Msg> get _messages {
-    final thread = AppState.instance.thread(
-      widget.parentName,
-      seed: widget.firstMessage,
-      seedTime: widget.firstTime,
-    );
+    final thread = AppState.instance.thread(widget.studentId);
     return thread
         .map((m) => _Msg(m.text, m.fromTeacher, m.time))
         .toList();
@@ -611,12 +590,27 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
-    // Chat उघडल्यावर शेवटच्या संदेशाकडे जा.
+    // Chat उघडल्यावर unread 0 करा आणि शेवटच्या संदेशाकडे जा.
+    AppState.instance.markThreadRead(widget.studentId);
+    AppState.instance.addListener(_onStateChange);
     _scrollToBottom();
+  }
+
+  int _seen = 0;
+
+  // chat उघडी असताना नवीन parent message आला तर तो लगेच "read" होतो.
+  void _onStateChange() {
+    final n = AppState.instance.thread(widget.studentId).length;
+    if (n != _seen) {
+      _seen = n;
+      AppState.instance.markThreadRead(widget.studentId);
+      _scrollToBottom();
+    }
   }
 
   @override
   void dispose() {
+    AppState.instance.removeListener(_onStateChange);
     _controller.dispose();
     _scroll.dispose();
     super.dispose();
@@ -629,7 +623,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
     // FIX 6: संदेश AppState मध्ये save होतो -> Parent ला लगेच दिसतो.
     AppState.instance.sendMessage(
-      widget.parentName,
+      widget.studentId,
       text,
       fromTeacher: true,
     );

@@ -1,0 +1,67 @@
+{
+  "project_info": {
+    "project_number": "396837861075",
+    "project_id": "little-steps-school-3df4c",
+    "storage_bucket": "little-steps-school-3df4c.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:396837861075:android:75005ce2affd27eb7bc626",
+        "android_client_info": {
+          "package_name": "com.example.little_steps_mvp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDTFsytVit3qxcoBSWVmON3jOD7qUJYm3M"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:396837861075:android:2b6821fdfdc4f2097bc626",
+        "android_client_info": {
+          "package_name": "com.example.little_steps_mvp.parent"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDTFsytVit3qxcoBSWVmON3jOD7qUJYm3M"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:396837861075:android:2165995620643c597bc626",
+        "android_client_info": {
+          "package_name": "com.example.little_steps_mvp.teacher"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDTFsytVit3qxcoBSWVmON3jOD7qUJYm3M"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

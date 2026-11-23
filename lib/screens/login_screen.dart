@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../config/app_config.dart';
+import '../services/auth_service.dart';
 import 'register_screen.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -65,44 +66,48 @@ class _LoginScreenState extends State<LoginScreen>
   // ---------------------------------------------------------------
   // ACTIONS
   // ---------------------------------------------------------------
-  void login() {
+  Future<void> login() async {
     FocusScope.of(context).unfocus();
 
     if (!_formKey.currentState!.validate()) return;
 
-    // Demo login. Firebase Authentication is not connected yet.
     setState(() => isLoading = true);
 
-    Future.delayed(const Duration(milliseconds: 500), () {
-      if (!mounted) return;
+    // Firebase Authentication ने खरं login (Parent ला हे screen वापरत नाही;
+    // त्याचा स्वतंत्र ParentLoginScreen आहे).
+    final error = await AuthService.loginTeacher(
+      emailController.text,
+      passwordController.text,
+    );
 
-      setState(() => isLoading = false);
+    if (!mounted) return;
+    setState(() => isLoading = false);
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            isParent
-                ? 'Demo Parent Login Successful!'
-                : 'Demo Teacher Login Successful!',
-          ),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+    if (error != null) {
+      _snack(error);
+      return;
+    }
 
-      // या APK चा स्वतःचा home screen उघडतो (AppConfig.homeBuilder).
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (_) => AppConfig.homeBuilder()),
-      );
-    });
+    // या APK चा स्वतःचा home screen उघडतो (AppConfig.homeBuilder).
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(builder: (_) => AppConfig.homeBuilder()),
+    );
   }
 
-  void forgotPassword() {
-    _snack('Password reset needs Firebase integration.');
+  Future<void> forgotPassword() async {
+    final email = emailController.text.trim();
+    if (email.isEmpty) {
+      _snack('Enter your email first, then tap Forgot password.');
+      return;
+    }
+    final error = await AuthService.resetPassword(email);
+    if (!mounted) return;
+    _snack(error ?? 'Password reset link sent to $email');
   }
 
   void googleLogin() {
-    _snack('Google sign-in needs Firebase integration.');
+    _snack('Google sign-in is not enabled yet. Please use email & password.');
   }
 
   void _snack(String text) {

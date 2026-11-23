@@ -57,15 +57,10 @@ class _PhotosScreenState extends State<PhotosScreen> {
     Icons.celebration_rounded,
   ];
 
-  static const List<String> _children = [
-    'Aarav',
-    'Diya',
-    'Kabir',
-    'Saanvi',
-    'Vihaan',
-    'Anaya',
-    'Vivaan',
-    'Advik',
+  // खरी मुलं: class च्या Firestore students मधून (पहिलं नाव) – dummy नावं काढली.
+  List<String> get _children => [
+    for (final c in AppState.instance.students)
+      if (c.firstName.isNotEmpty) c.firstName,
   ];
 
   static const List<String> _activities = [
@@ -80,18 +75,12 @@ class _PhotosScreenState extends State<PhotosScreen> {
   final TextEditingController _caption = TextEditingController();
 
   int _mode = 0; // 0 = selected children, 1 = whole class
-  int _counter = 6;
+  int _counter = 0;
   String? _activity;
   bool _sending = false;
 
-  final List<_Photo> _photos = [
-    _Photo(0, {'Aarav'}),
-    _Photo(1, {'Aarav', 'Diya'}),
-    _Photo(2, {'Aarav', 'Saanvi'}),
-    _Photo(3, {'Diya'}),
-    _Photo(4, {'Saanvi'}),
-    _Photo(5),
-  ];
+  // सुरुवातीला रिकामी list – teacher स्वतः photos जोडतो.
+  final List<_Photo> _photos = [];
 
   @override
   void dispose() {
@@ -150,15 +139,15 @@ class _PhotosScreenState extends State<PhotosScreen> {
 
     setState(() {
       for (var i = 0; i < toAdd; i++) {
-        final tagged = _children[_counter % _children.length];
-        _photos.add(_Photo(_counter % _tileBg.length, {tagged}));
+        // खोटं auto-tag नाही: teacher स्वतः मुलांना tag करतो.
+        _photos.add(_Photo(_counter % _tileBg.length));
         _counter++;
       }
     });
 
     _msg(
       toAdd == 1
-          ? '$source demo photo added.'
+          ? 'Photo added from $source.'
           : '$toAdd photos added from $source.',
     );
   }

@@ -3,6 +3,8 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../config/app_config.dart';
+import '../services/auth_service.dart';
 import 'parent_login_screen.dart';
 
 /// Splash screen for the PARENT app only.
@@ -190,13 +192,17 @@ class _ParentSplashScreenState extends State<ParentSplashScreen>
     if (_started && !_gone) _play();
   }
 
-  void _goNext() {
+  Future<void> _goNext() async {
     if (!mounted || _gone) return;
     _gone = true;
+    // आधी login केलेला असेल तर थेट home, नाहीतर login screen.
+    final loggedIn = await AuthService.restoreSession('parent');
+    if (!mounted) return;
     Navigator.of(context).pushReplacement(
       PageRouteBuilder<void>(
         transitionDuration: const Duration(milliseconds: 550),
-        pageBuilder: (_, __, ___) => const ParentLoginScreen(),
+        pageBuilder: (_, __, ___) =>
+        loggedIn ? AppConfig.homeBuilder() : const ParentLoginScreen(),
         transitionsBuilder: (_, animation, __, child) =>
             FadeTransition(opacity: animation, child: child),
       ),

@@ -3,6 +3,8 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../config/app_config.dart';
+import '../services/auth_service.dart';
 import 'login_screen.dart';
 
 class SplashScreen extends StatefulWidget {
@@ -73,12 +75,16 @@ class _SplashScreenState extends State<SplashScreen>
     );
   }
 
-  void _goNext() {
+  Future<void> _goNext() async {
+    if (!mounted) return;
+    // आधी login केलेला असेल तर थेट home, नाहीतर login screen.
+    final loggedIn = await AuthService.restoreSession('teacher');
     if (!mounted) return;
     Navigator.of(context).pushReplacement(
       PageRouteBuilder<void>(
         transitionDuration: const Duration(milliseconds: 550),
-        pageBuilder: (_, __, ___) => const LoginScreen(),
+        pageBuilder: (_, __, ___) =>
+        loggedIn ? AppConfig.homeBuilder() : const LoginScreen(),
         transitionsBuilder: (_, animation, __, child) =>
             FadeTransition(opacity: animation, child: child),
       ),

@@ -70,12 +70,15 @@ class _CircularScreenState extends State<CircularScreen> {
   static const Color _muted = Color(0xFF7B8794);
   static const Color _danger = Color(0xFFE5484D);
 
-  static const Map<String, int> _classFamilies = {
-    'Nursery A': 22,
-    'Nursery B': 21,
-    'LKG': 22,
-    'UKG': 21,
+  // dummy class counts काढले: teacher चा स्वतःचा class + खऱ्या students ची संख्या.
+  Map<String, int> get _classFamilies => {
+    if (AppState.instance.className.isNotEmpty)
+      AppState.instance.className: AppState.instance.totalFamilies,
   };
+
+  String get _myClass => AppState.instance.className.isEmpty
+      ? 'My Class'
+      : AppState.instance.className;
 
   static const List<String> _categories = [
     'Notice',
@@ -170,7 +173,7 @@ class _CircularScreenState extends State<CircularScreen> {
       case 0:
         return AppState.instance.totalFamilies;
       case 1:
-        return _classFamilies['Nursery A']!;
+        return AppState.instance.totalFamilies;
       default:
         return _chosen.fold<int>(
           0,
@@ -184,7 +187,7 @@ class _CircularScreenState extends State<CircularScreen> {
       case 0:
         return 'Whole school';
       case 1:
-        return 'Nursery A';
+        return _myClass;
       default:
         return _chosen.join(', ');
     }
@@ -1012,8 +1015,8 @@ class _CircularScreenState extends State<CircularScreen> {
               ),
               const SizedBox(height: 9),
               _audienceOption(
-                title: 'Nursery A',
-                subtitle: '${_classFamilies['Nursery A']} families',
+                title: _myClass,
+                subtitle: '${AppState.instance.totalFamilies} families',
                 icon: Icons.child_care_rounded,
                 selected: _audience == 1,
                 onTap: () => setState(() => _audience = 1),

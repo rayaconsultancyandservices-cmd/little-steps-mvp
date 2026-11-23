@@ -29,13 +29,17 @@ class ParentMessageScreen extends StatefulWidget {
 }
 
 class _ParentMessageScreenState extends State<ParentMessageScreen> {
-  static const _quickReplies = [
-    'Thank you ma’am!',
-    'Please call me when free',
-    'Running late for pickup',
-    'Is there any homework today?',
-    'Aarav will be absent tomorrow',
-  ];
+  // मुलाचं खरं नाव वापरतो (dummy 'Aarav' काढला).
+  List<String> get _quickReplies {
+    final n = AppState.instance.child.firstName;
+    return [
+      'Thank you ma’am!',
+      'Please call me when free',
+      'Running late for pickup',
+      'Is there any homework today?',
+      if (n.isNotEmpty) '$n will be absent tomorrow',
+    ];
+  }
 
   final _controller = TextEditingController();
   final _scroll = ScrollController();
