@@ -619,7 +619,11 @@ class _CircularScreenState extends State<CircularScreen> {
 
   void _openHistoryDetails(CircularRecord record) {
     final color = _categoryColors[record.category] ?? _primary;
-    final extra = _extras[record];
+    final _SentExtra? extra = _SentExtra(
+      important: record.important,
+      needsAck: record.needsAck,
+      scheduledFor: record.scheduledFor,
+    );
 
     showModalBottomSheet<void>(
       context: context,
@@ -1951,10 +1955,89 @@ class _CircularScreenState extends State<CircularScreen> {
     );
   }
 
+  /// नवीन: चुकीचं circular delete करतो (Parent च्या list मधूनही जातं).
+  Future<void> _editCircular(CircularRecord circular) async {
+    final result = await showDialog<_CircularEdit>(
+      context: context,
+      builder: (_) => _EditCircularDialog(
+        circular: circular,
+        categories: _categories,
+      ),
+    );
+    if (result == null || !mounted) return;
+
+    try {
+      await AppState.instance.updateCircular(
+        circular.id,
+        title: result.title,
+        message: result.message,
+        category: result.category,
+        important: result.important,
+        needsAck: result.needsAck,
+        eventDate: result.eventDate,
+      );
+      _showMessage('Circular updated. Parents can see the changes now.');
+    } catch (_) {
+      _showMessage('Could not update. Please try again.');
+    }
+  }
+
+  Future<void> _deleteCircular(CircularRecord circular) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(21)),
+        title: const Text(
+          'Delete circular?',
+          style: TextStyle(
+            color: _dark,
+            fontSize: 17,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+        content: Text(
+          '"${circular.title}" will also be removed from all parents.',
+          style: const TextStyle(color: _muted, fontSize: 13),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: TextButton.styleFrom(foregroundColor: _danger),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+
+    try {
+      await AppState.instance.deleteCircular(circular.id);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Circular deleted')),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not delete. Please try again.')),
+      );
+    }
+  }
+
   Widget _historyCard(CircularRecord circular) {
     final color = _categoryColors[circular.category] ?? _primary;
     final icon = _categoryIcons[circular.category] ?? Icons.description;
-    final extra = _extras[circular];
+    // FIXED: आधी फक्त स्थानिक _extras वापरत होतो, त्यामुळे app restart नंतर
+    // Important / Acknowledgement pills गायब व्हायचे. आता Firestore चं data वापरतो.
+    final _SentExtra? extra = _SentExtra(
+      important: circular.important,
+      needsAck: circular.needsAck,
+      scheduledFor: circular.scheduledFor,
+    );
 
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
@@ -2066,6 +2149,33 @@ class _CircularScreenState extends State<CircularScreen> {
                     AppState.timeLabel(circular.sentAt),
                     style: const TextStyle(color: _muted, fontSize: 9),
                   ),
+                  const SizedBox(height: 6),
+                  // नवीन: Edit
+                  InkWell(
+                    onTap: () => _editCircular(circular),
+                    borderRadius: BorderRadius.circular(10),
+                    child: const Padding(
+                      padding: EdgeInsets.all(4),
+                      child: Icon(
+                        Icons.edit_outlined,
+                        size: 19,
+                        color: _primary,
+                      ),
+                    ),
+                  ),
+                  // नवीन: Delete
+                  InkWell(
+                    onTap: () => _deleteCircular(circular),
+                    borderRadius: BorderRadius.circular(10),
+                    child: const Padding(
+                      padding: EdgeInsets.all(4),
+                      child: Icon(
+                        Icons.delete_outline_rounded,
+                        size: 19,
+                        color: _danger,
+                      ),
+                    ),
+                  ),
                 ],
               ),
             ],
@@ -2107,6 +2217,207 @@ class _CircularScreenState extends State<CircularScreen> {
           ),
         ],
       ),
+    );
+  }
+}
+
+
+// ============================================================
+// NEW: Circular edit dialog
+// ============================================================
+class _CircularEdit {
+  const _CircularEdit({
+    required this.title,
+    required this.message,
+    required this.category,
+    required this.important,
+    required this.needsAck,
+    this.eventDate,
+  });
+
+  final String title;
+  final String message;
+  final String category;
+  final bool important;
+  final bool needsAck;
+  final DateTime? eventDate;
+}
+
+class _EditCircularDialog extends StatefulWidget {
+  const _EditCircularDialog({
+    required this.circular,
+    required this.categories,
+  });
+
+  final CircularRecord circular;
+  final List<String> categories;
+
+  @override
+  State<_EditCircularDialog> createState() => _EditCircularDialogState();
+}
+
+class _EditCircularDialogState extends State<_EditCircularDialog> {
+  static const Color _primary = Color(0xFF2F8877);
+  static const Color _dark = Color(0xFF24313D);
+  static const Color _muted = Color(0xFF7B8794);
+
+  late final TextEditingController _title =
+  TextEditingController(text: widget.circular.title);
+  late final TextEditingController _message =
+  TextEditingController(text: widget.circular.message);
+  late String _category = widget.categories.contains(widget.circular.category)
+      ? widget.circular.category
+      : widget.categories.first;
+  late bool _important = widget.circular.important;
+  late bool _needsAck = widget.circular.needsAck;
+  late DateTime? _eventDate = widget.circular.eventDate;
+  String? _error;
+
+  @override
+  void dispose() {
+    _title.dispose();
+    _message.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pickDate() async {
+    final now = DateTime.now();
+    final initial = _eventDate ?? now;
+    final d = await showDatePicker(
+      context: context,
+      initialDate: initial,
+      firstDate: DateTime(now.year - 1),
+      lastDate: DateTime(now.year + 2),
+    );
+    if (d != null) setState(() => _eventDate = d);
+  }
+
+  void _save() {
+    if (_title.text.trim().isEmpty || _message.text.trim().isEmpty) {
+      setState(() => _error = 'Title and message are required.');
+      return;
+    }
+    Navigator.pop(
+      context,
+      _CircularEdit(
+        title: _title.text.trim(),
+        message: _message.text.trim(),
+        category: _category,
+        important: _important,
+        needsAck: _needsAck,
+        eventDate: _eventDate,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(21)),
+      title: const Text(
+        'Edit circular',
+        style: TextStyle(
+          color: _dark,
+          fontSize: 17,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+      content: SizedBox(
+        width: 420,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              TextField(
+                controller: _title,
+                textCapitalization: TextCapitalization.sentences,
+                decoration: const InputDecoration(labelText: 'Title'),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _message,
+                minLines: 3,
+                maxLines: 6,
+                textCapitalization: TextCapitalization.sentences,
+                decoration: const InputDecoration(labelText: 'Message'),
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<String>(
+                // ignore: deprecated_member_use
+                value: _category,
+                decoration: const InputDecoration(labelText: 'Category'),
+                items: [
+                  for (final c in widget.categories)
+                    DropdownMenuItem(value: c, child: Text(c)),
+                ],
+                onChanged: (v) => setState(() => _category = v ?? _category),
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      _eventDate == null
+                          ? 'No event date'
+                          : 'Event date: ${AppState.shortDate(_eventDate!)}',
+                      style: const TextStyle(color: _muted, fontSize: 12),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: _pickDate,
+                    child: Text(_eventDate == null ? 'Set date' : 'Change'),
+                  ),
+                  if (_eventDate != null)
+                    IconButton(
+                      tooltip: 'Clear date',
+                      onPressed: () => setState(() => _eventDate = null),
+                      icon: const Icon(Icons.close_rounded, size: 18),
+                    ),
+                ],
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                activeColor: _primary,
+                title: const Text('Mark as important',
+                    style: TextStyle(fontSize: 13)),
+                value: _important,
+                onChanged: (v) => setState(() => _important = v),
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                activeColor: _primary,
+                title: const Text('Needs acknowledgement',
+                    style: TextStyle(fontSize: 13)),
+                value: _needsAck,
+                onChanged: (v) => setState(() => _needsAck = v),
+              ),
+              if (_error != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Text(
+                    _error!,
+                    style: const TextStyle(
+                      color: Color(0xFFE5484D),
+                      fontSize: 12,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          style: FilledButton.styleFrom(backgroundColor: _primary),
+          onPressed: _save,
+          child: const Text('Save changes'),
+        ),
+      ],
     );
   }
 }

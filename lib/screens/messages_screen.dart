@@ -1,4 +1,8 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 
 import '../state/app_state.dart';
 import '../theme/app_colors.dart';
@@ -535,12 +539,20 @@ class _Msg {
   const _Msg(
       this.text,
       this.mine,
-      this.time,
-      );
+      this.time, {
+        this.id = '',
+        this.image = '',
+        this.photoOnly = false,
+      });
 
   final String text;
   final bool mine;
   final String time;
+  final String id;
+
+  /// NEW: फोटो ('data:image/jpeg;base64,...'), नसेल तर ''.
+  final String image;
+  final bool photoOnly;
 }
 
 class ChatScreen extends StatefulWidget {
@@ -577,13 +589,25 @@ class _ChatScreenState extends State<ChatScreen> {
 
   final ScrollController _scroll = ScrollController();
 
+  // NEW: पाठवायचा बाकी फोटो + decode cache.
+  Uint8List? _pendingPhoto;
+  bool _sending = false;
+  final Map<String, Uint8List> _imageCache = {};
+
   // FIX 6: Chat आता AppState च्या shared thread मधून येतो
   // (Parent app चा ParentMessageScreen हाच thread वापरतो).
 
   List<_Msg> get _messages {
     final thread = AppState.instance.thread(widget.studentId);
     return thread
-        .map((m) => _Msg(m.text, m.fromTeacher, m.time))
+        .map((m) => _Msg(
+      m.text,
+      m.fromTeacher,
+      m.time,
+      id: m.id,
+      image: m.image,
+      photoOnly: m.isPhotoOnly,
+    ))
         .toList();
   }
 
@@ -616,31 +640,131 @@ class _ChatScreenState extends State<ChatScreen> {
     super.dispose();
   }
 
-  void _send([String? quickReply]) {
-    final text = (quickReply ?? _controller.text).trim();
+  void _snack(String text) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(text), behavior: SnackBarBehavior.floating),
+    );
+  }
 
-    if (text.isEmpty) return;
-
-    // FIX 6: संदेश AppState मध्ये save होतो -> Parent ला लगेच दिसतो.
-    AppState.instance
-        .sendMessage(
-      widget.studentId,
-      text,
-      fromTeacher: true,
-    )
-        .catchError((Object e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Message not sent: $e'),
-          behavior: SnackBarBehavior.floating,
+  Future<void> _pickPhoto() async {
+    final source = await showModalBottomSheet<ImageSource>(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 8),
+            ListTile(
+              leading: const Icon(Icons.photo_camera_outlined, color: _primary),
+              title: const Text('Take a photo'),
+              onTap: () => Navigator.pop(ctx, ImageSource.camera),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library_outlined, color: _primary),
+              title: const Text('Choose from gallery'),
+              onTap: () => Navigator.pop(ctx, ImageSource.gallery),
+            ),
+            const SizedBox(height: 6),
+          ],
         ),
-      );
-    });
-    _controller.clear();
-    setState(() {});
+      ),
+    );
+    if (source == null || !mounted) return;
 
+    try {
+      final picked = await ImagePicker().pickImage(
+        source: source,
+        maxWidth: 1024,
+        imageQuality: 70,
+      );
+      if (picked == null) return;
+      final bytes = await picked.readAsBytes();
+      if (!mounted) return;
+      if (bytes.length > AppState.maxChatPhotoBytes) {
+        _snack('Photo is too large. Please choose a smaller photo.');
+        return;
+      }
+      setState(() => _pendingPhoto = bytes);
+    } catch (_) {
+      if (mounted) _snack('Could not open the photo. Please try again.');
+    }
+  }
+
+  Future<void> _send([String? quickReply]) async {
+    final text = (quickReply ?? _controller.text).trim();
+    final photo = quickReply == null ? _pendingPhoto : null;
+
+    if ((text.isEmpty && photo == null) || _sending) return;
+
+    setState(() {
+      _sending = true;
+      if (quickReply == null) _pendingPhoto = null;
+    });
+    if (quickReply == null) _controller.clear();
     _scrollToBottom();
+
+    try {
+      // FIX 6: संदेश AppState मध्ये save होतो -> Parent ला लगेच दिसतो.
+      await AppState.instance.sendMessage(
+        widget.studentId,
+        text,
+        fromTeacher: true,
+        imageBytes: photo,
+      );
+    } catch (e) {
+      if (!mounted) return;
+      if (quickReply == null) {
+        _controller.text = text;
+        setState(() => _pendingPhoto = photo);
+      }
+      _snack(e is String ? e : 'Message not sent: $e');
+    } finally {
+      if (mounted) setState(() => _sending = false);
+    }
+  }
+
+  Uint8List? _imageOf(_Msg m) {
+    if (m.image.isEmpty) return null;
+    final cached = _imageCache[m.id];
+    if (cached != null) return cached;
+    try {
+      final comma = m.image.indexOf(',');
+      final bytes =
+      base64Decode(comma < 0 ? m.image : m.image.substring(comma + 1));
+      if (m.id.isNotEmpty) _imageCache[m.id] = bytes;
+      return bytes;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  void _openPhoto(Uint8List bytes) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.black,
+        insetPadding: const EdgeInsets.all(12),
+        child: Stack(
+          children: [
+            InteractiveViewer(
+              child: Center(child: Image.memory(bytes, fit: BoxFit.contain)),
+            ),
+            Positioned(
+              top: 4,
+              right: 4,
+              child: IconButton(
+                onPressed: () => Navigator.pop(ctx),
+                icon: const Icon(Icons.close_rounded, color: Colors.white),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   void _scrollToBottom() {
@@ -813,6 +937,48 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
           ),
 
+          // NEW: निवडलेल्या फोटोचा preview
+          if (_pendingPhoto != null)
+            Container(
+              width: double.infinity,
+              color: Colors.white,
+              padding: const EdgeInsets.fromLTRB(14, 8, 14, 0),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: Image.memory(
+                        _pendingPhoto!,
+                        height: 86,
+                        width: 86,
+                        fit: BoxFit.cover,
+                      ),
+                    ),
+                    Positioned(
+                      top: -6,
+                      right: -6,
+                      child: GestureDetector(
+                        onTap: () => setState(() => _pendingPhoto = null),
+                        child: Container(
+                          width: 22,
+                          height: 22,
+                          decoration: const BoxDecoration(
+                            color: _dark,
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(Icons.close_rounded,
+                              size: 14, color: Colors.white),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
           // MESSAGE COMPOSER
           Container(
             padding: const EdgeInsets.fromLTRB(12, 9, 12, 12),
@@ -829,6 +995,16 @@ class _ChatScreenState extends State<ChatScreen> {
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
+                  SizedBox(
+                    height: 46,
+                    width: 46,
+                    child: IconButton(
+                      tooltip: 'Attach photo',
+                      onPressed: _sending ? null : _pickPhoto,
+                      icon: const Icon(Icons.image_outlined, color: _primary),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
                   Expanded(
                     child: TextField(
                       controller: _controller,
@@ -921,14 +1097,30 @@ class _ChatScreenState extends State<ChatScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
-            Text(
-              message.text,
-              style: const TextStyle(
-                color: _dark,
-                fontSize: 12,
-                height: 1.45,
+            if (_imageOf(message) != null) ...[
+              GestureDetector(
+                onTap: () => _openPhoto(_imageOf(message)!),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(11),
+                  child: Image.memory(
+                    _imageOf(message)!,
+                    width: 210,
+                    fit: BoxFit.cover,
+                    gaplessPlayback: true,
+                  ),
+                ),
               ),
-            ),
+              if (!message.photoOnly) const SizedBox(height: 6),
+            ],
+            if (!message.photoOnly)
+              Text(
+                message.text,
+                style: const TextStyle(
+                  color: _dark,
+                  fontSize: 12,
+                  height: 1.45,
+                ),
+              ),
             const SizedBox(height: 5),
             Row(
               mainAxisSize: MainAxisSize.min,

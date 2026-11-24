@@ -1,4 +1,6 @@
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'admin_state.dart';
 import 'admin_widgets.dart';
@@ -223,6 +225,71 @@ class _AdminTeachersScreenState extends State<AdminTeachersScreen> {
     }
   }
 
+  Future<void> _unassign(AdminTeacher t) async {
+    final ok = await adminConfirm(
+      context,
+      title: 'Remove ${t.name} from ${t.className}?',
+      message: 'The teacher will keep their login but will no longer see this '
+          'class. The class will show "Not assigned" until you assign a '
+          'teacher again.',
+      confirmText: 'Unassign',
+      danger: true,
+    );
+    if (!ok) return;
+    try {
+      await AdminState.instance.unassignTeacher(t);
+      if (mounted) adminSnack(context, '${t.name} unassigned');
+    } catch (e) {
+      if (mounted) adminSnack(context, AdminState.errorText(e), error: true);
+    }
+  }
+
+  Future<void> _copyEmail(AdminTeacher t) async {
+    await Clipboard.setData(ClipboardData(text: t.email));
+    if (mounted) adminSnack(context, 'Email copied');
+  }
+
+  Future<void> _resetPassword(AdminTeacher t) async {
+    final ok = await adminConfirm(
+      context,
+      title: 'Send password reset email?',
+      message: 'A password reset link will be emailed to ${t.email}.',
+      confirmText: 'Send email',
+    );
+    if (!ok) return;
+    try {
+      await FirebaseAuth.instance.sendPasswordResetEmail(email: t.email);
+      if (mounted) adminSnack(context, 'Reset email sent to ${t.email}');
+    } on FirebaseAuthException catch (e) {
+      if (mounted) {
+        adminSnack(context, e.message ?? 'Could not send email', error: true);
+      }
+    } catch (e) {
+      if (mounted) adminSnack(context, AdminState.errorText(e), error: true);
+    }
+  }
+
+  Future<void> _approveAllPending() async {
+    final s = AdminState.instance;
+    final pending = s.teachers.where((t) => !t.approved).toList();
+    if (pending.isEmpty) return;
+    final ok = await adminConfirm(
+      context,
+      title: 'Approve all ${pending.length} pending teachers?',
+      message: 'All pending teachers will be able to open the Teacher app.',
+      confirmText: 'Approve all',
+    );
+    if (!ok) return;
+    try {
+      for (final t in pending) {
+        await s.setTeacherApproved(t, true);
+      }
+      if (mounted) adminSnack(context, '${pending.length} teachers approved');
+    } catch (e) {
+      if (mounted) adminSnack(context, AdminState.errorText(e), error: true);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
@@ -236,13 +303,22 @@ class _AdminTeachersScreenState extends State<AdminTeachersScreen> {
         final list = s.teachers.where((t) {
           final matchesStatus = _statusFilter == 'All' ||
               (_statusFilter == 'Approved' && t.approved) ||
-              (_statusFilter == 'Pending' && !t.approved);
+              (_statusFilter == 'Pending' && !t.approved) ||
+              (_statusFilter == 'Unassigned' && t.classId.isEmpty);
           final matchesSearch = _q.isEmpty ||
               '${t.name} ${t.email} ${t.phone} ${t.employeeId} ${t.className}'
                   .toLowerCase()
                   .contains(_q);
           return matchesStatus && matchesSearch;
-        }).toList();
+        }).toList()
+        // Pending teachers first, then A–Z.
+          ..sort((a, b) {
+            if (a.approved != b.approved) return a.approved ? 1 : -1;
+            return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+          });
+
+        final noTeacherClasses =
+            s.classes.where((c) => c.teacherName.trim().isEmpty).length;
 
         return AdminPage(
           title: 'Teacher management',
@@ -266,6 +342,8 @@ class _AdminTeachersScreenState extends State<AdminTeachersScreen> {
                 PopupMenuItem(value: 'All', child: Text('All teachers')),
                 PopupMenuItem(value: 'Approved', child: Text('Approved only')),
                 PopupMenuItem(value: 'Pending', child: Text('Pending only')),
+                PopupMenuItem(
+                    value: 'Unassigned', child: Text('No class assigned')),
               ],
               child: Container(
                 height: 44,
@@ -292,6 +370,44 @@ class _AdminTeachersScreenState extends State<AdminTeachersScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               ErrorBanner(s.lastError),
+              if (pending > 0) ...[
+                Container(
+                  width: double.infinity,
+                  margin: const EdgeInsets.only(bottom: 14),
+                  padding:
+                  const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+                  decoration: BoxDecoration(
+                    color: AdminColors.orange.withValues(alpha: 0.09),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(
+                      color: AdminColors.orange.withValues(alpha: 0.3),
+                    ),
+                  ),
+                  child: Wrap(
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    spacing: 12,
+                    runSpacing: 8,
+                    children: [
+                      const Icon(Icons.pending_actions_rounded,
+                          color: AdminColors.orange, size: 20),
+                      Text(
+                        '$pending teacher account(s) are waiting for your approval.',
+                        style: const TextStyle(
+                          color: AdminColors.dark,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      FilledButton.icon(
+                        style: adminPrimaryButton(),
+                        onPressed: _approveAllPending,
+                        icon: const Icon(Icons.done_all_rounded, size: 16),
+                        label: const Text('Approve all'),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
               AdminResponsiveGrid(
                 minItemWidth: 190,
                 spacing: 12,
@@ -333,6 +449,16 @@ class _AdminTeachersScreenState extends State<AdminTeachersScreen> {
                       _q = '';
                     }),
                   ),
+                  _TeacherMetricCard(
+                    icon: Icons.person_search_rounded,
+                    label: 'Classes without teacher',
+                    value: '$noTeacherClasses',
+                    note: 'of ${s.classes.length} classes',
+                    color: noTeacherClasses > 0
+                        ? AdminColors.red
+                        : AdminColors.green,
+                    onTap: () => setState(() => _statusFilter = 'Unassigned'),
+                  ),
                 ],
               ),
               const SizedBox(height: 22),
@@ -370,7 +496,7 @@ class _AdminTeachersScreenState extends State<AdminTeachersScreen> {
                       AdminTable(
                         columns: const [
                           'Teacher', 'Contact', 'Employee ID', 'Class',
-                          'Access', 'School', 'Joined', 'Actions',
+                          'Students', 'Access', 'School', 'Joined', 'Actions',
                         ],
                         rows: [
                           for (final t in list)
@@ -437,6 +563,9 @@ class _AdminTeachersScreenState extends State<AdminTeachersScreen> {
                                     ? AdminColors.orange
                                     : AdminColors.primary,
                               )),
+                              cellText(t.classId.isEmpty
+                                  ? '—'
+                                  : '${s.studentsOfClass(t.classId).length}'),
                               DataCell(StatusChip(
                                 t.approved ? 'Approved' : 'Pending',
                                 t.approved
@@ -458,6 +587,12 @@ class _AdminTeachersScreenState extends State<AdminTeachersScreen> {
                                     _assign(t);
                                   } else if (v == 'approve') {
                                     _toggleApproval(t);
+                                  } else if (v == 'unassign') {
+                                    _unassign(t);
+                                  } else if (v == 'copy') {
+                                    _copyEmail(t);
+                                  } else if (v == 'reset') {
+                                    _resetPassword(t);
                                   } else if (v == 'remove') {
                                     _remove(t);
                                   }
@@ -476,6 +611,19 @@ class _AdminTeachersScreenState extends State<AdminTeachersScreen> {
                                     child: Text(t.approved
                                         ? 'Revoke access'
                                         : 'Approve teacher'),
+                                  ),
+                                  if (t.classId.isNotEmpty)
+                                    const PopupMenuItem(
+                                      value: 'unassign',
+                                      child: Text('Unassign class'),
+                                    ),
+                                  const PopupMenuItem(
+                                    value: 'copy',
+                                    child: Text('Copy email'),
+                                  ),
+                                  const PopupMenuItem(
+                                    value: 'reset',
+                                    child: Text('Send password reset'),
                                   ),
                                   const PopupMenuItem(
                                     value: 'remove',

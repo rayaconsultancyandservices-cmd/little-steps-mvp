@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -125,7 +126,11 @@ class PhotoBatch {
     required this.caption,
     required this.wholeClass,
     required this.sentAt,
+    this.batchId = '',
   });
+
+  /// Firestore मधील batchId (delete करण्यासाठी वापरतो).
+  final String batchId;
 
   final List<SharedPhoto> photos;
   final String caption;
@@ -159,12 +164,20 @@ class DiaryPost {
 
 class ChatMessage {
   const ChatMessage(this.text, this.fromTeacher, this.time,
-      {this.id = '', this.at});
+      {this.id = '', this.at, this.image = ''});
   final String id;
   final String text;
   final bool fromTeacher;
   final String time;
   final DateTime? at;
+
+  /// NEW: फोटो असलेला message – 'data:image/jpeg;base64,...' (नसेल तर '').
+  final String image;
+
+  bool get hasImage => image.isNotEmpty;
+
+  /// फोटोसोबत caption नसेल तर हा default मजकूर साठवला जातो.
+  bool get isPhotoOnly => hasImage && text == AppState.photoMessageText;
 }
 
 /// Teacher च्या Messages list साठी: प्रत्येक मुलाच्या thread ची summary.
@@ -338,6 +351,41 @@ class FeeReceipt {
   final String mode;
 }
 
+/// Parent ने पाठवलेला रजेचा अर्ज (Teacher approve / decline करतो).
+class LeaveRequest {
+  const LeaveRequest({
+    this.id = '',
+    required this.studentId,
+    required this.studentName,
+    required this.parentName,
+    required this.fromDate,
+    required this.toDate,
+    required this.reason,
+    this.status = 'pending',
+    this.teacherNote = '',
+    required this.createdAt,
+  });
+
+  final String id;
+  final String studentId;
+  final String studentName;
+  final String parentName;
+  final DateTime fromDate;
+  final DateTime toDate;
+  final String reason;
+
+  /// 'pending' | 'approved' | 'declined'
+  final String status;
+  final String teacherNote;
+  final DateTime createdAt;
+
+  bool get isPending => status == 'pending';
+  bool get isApproved => status == 'approved';
+  bool get isDeclined => status == 'declined';
+
+  int get days => toDate.difference(fromDate).inDays + 1;
+}
+
 class SchoolEvent {
   const SchoolEvent({
     this.id = '',
@@ -441,6 +489,9 @@ class AppState extends ChangeNotifier {
   List<FeeItem> fees = [];
   List<FeeReceipt> receipts = [];
 
+  /// Leave अर्ज: Teacher ला class चे सर्व, Parent ला फक्त स्वतःच्या मुलाचे.
+  List<LeaveRequest> leaves = [];
+
   final Map<String, List<ChatMessage>> _threads = {};
   final Map<String, StreamSubscription<dynamic>> _threadSubs = {};
   final Map<String, ThreadMeta> _threadMetas = {};
@@ -493,6 +544,18 @@ class AppState extends ChangeNotifier {
       return null;
     } catch (e) {
       lastError = '$e';
+      // बदल: Parent चा access गेला असेल (teacher/admin ने email बदलला किंवा
+      // विद्यार्थी delete केला) तर raw Firestore error ऐवजी स्पष्ट संदेश.
+      if (role == 'parent') {
+        await _cancelAll();
+        if (e is FirebaseException && e.code == 'permission-denied') {
+          return 'This email is no longer linked to a student. '
+              'Please ask the teacher or school office to check your email.';
+        }
+        if (e is String) {
+          return '$e Please ask the teacher or school office.';
+        }
+      }
       return 'Could not load data: $e';
     }
   }
@@ -541,6 +604,7 @@ class AppState extends ChangeNotifier {
     _extraEvents = [];
     fees = [];
     receipts = [];
+    leaves = [];
     _threads.clear();
     _threadMetas.clear();
     _myThreadMeta = null;
@@ -621,9 +685,15 @@ class AppState extends ChangeNotifier {
 
     _startClassFeeds();
 
+    // Leave अर्ज (class चे सर्व)
+    _listen(
+      _classCol('leaves').orderBy('createdAt', descending: true).limit(100),
+          (snap) => leaves = _leavesFrom(snap.docs),
+    );
+
     // Photos (teacher ला सर्व)
     _listen(
-      _classCol('photos').orderBy('sentAt', descending: true).limit(150),
+      _classCol('photos').orderBy('sentAt', descending: true).limit(40),
           (snap) => _buildPhotoBatches(snap.docs),
     );
 
@@ -693,6 +763,11 @@ class AppState extends ChangeNotifier {
           notifyListeners();
         }
       },
+      // बदल: access मध्येच बंद झाला तर app crash/unhandled error होऊ नये.
+      onError: (Object e) {
+        lastError = '$e';
+        notifyListeners();
+      },
     ));
 
     // आजचा attendance (फक्त या मुलाचा)
@@ -735,6 +810,12 @@ class AppState extends ChangeNotifier {
     );
 
     _startClassFeeds();
+
+    // Leave अर्ज: फक्त या मुलाचे (नवीन आधी — sort इथेच, म्हणून index लागत नाही)
+    _listen(
+      _classCol('leaves').where('studentId', isEqualTo: studentId),
+          (snap) => leaves = _leavesFrom(snap.docs),
+    );
 
     // Photos: फक्त या मुलाचे + whole class
     _listen(
@@ -788,6 +869,9 @@ class AppState extends ChangeNotifier {
       final x = d.data();
       _myThreadMeta =
       x == null ? null : _ParentThreadMeta((x['parentUnread'] ?? 0) as int);
+      notifyListeners();
+    }, onError: (Object e) {
+      lastError = '$e';
       notifyListeners();
     }));
     _ensureThread(studentId);
@@ -874,9 +958,11 @@ class AppState extends ChangeNotifier {
       map.putIfAbsent((d['batchId'] ?? d.id) as String, () => []).add(d);
     }
     final out = <PhotoBatch>[];
-    for (final group in map.values) {
+    for (final entry in map.entries) {
+      final group = entry.value;
       final first = group.first.data();
       out.add(PhotoBatch(
+        batchId: entry.key,
         photos: [
           for (final d in group)
             SharedPhoto(
@@ -918,8 +1004,45 @@ class AppState extends ChangeNotifier {
     );
   }
 
-  Future<void> updateStudent(ChildInfo s) =>
-      _db.collection('students').doc(s.id).update(s.toMap());
+  /// Teacher: विद्यार्थ्याची माहिती बदलतो.
+  /// `previous` दिला आणि parent email बदलला असेल तर जुन्या parent चं login
+  /// profile काढतो (नवीन email ने parent पुन्हा login केल्यावर आपोआप link होतो).
+  Future<void> updateStudent(ChildInfo s, {ChildInfo? previous}) async {
+    // classId नेहमी teacher चा स्वतःचा class ठेवतो (rules: class बदलता येत नाही).
+    await _db
+        .collection('students')
+        .doc(s.id)
+        .update({...s.toMap(), 'classId': classId});
+
+    if (previous == null) return;
+    final oldMail = previous.parentEmail.trim().toLowerCase();
+    final newMail = s.parentEmail.trim().toLowerCase();
+    if (oldMail == newMail) return;
+
+    final refs = await _parentProfileRefs(s.id);
+    for (final r in refs) {
+      await r.delete();
+    }
+  }
+
+  /// या विद्यार्थ्याशी जोडलेले parent login profiles (`users` docs).
+  /// Rules नुसार Teacher फक्त आपल्या class चे `role == parent` profiles वाचू/काढू शकतो.
+  Future<List<DocumentReference<Map<String, dynamic>>>> _parentProfileRefs(
+      String studentId) async {
+    try {
+      final q = await _db
+          .collection('users')
+          .where('role', isEqualTo: 'parent')
+          .where('classId', isEqualTo: classId)
+          .where('studentId', isEqualTo: studentId)
+          .get();
+      return q.docs.map((d) => d.reference).toList();
+    } catch (e) {
+      // Rules अजून deploy झाले नसतील तरी विद्यार्थी delete / edit अडू नये.
+      lastError = '$e';
+      return const [];
+    }
+  }
 
   /// विद्यार्थी + त्याचा संबंधित data (fees, receipts, attendance, chat) एकत्र काढतो.
   /// Student document शेवटी काढतो (rules त्याच्या class वरून बाकीची परवानगी तपासतात).
@@ -937,6 +1060,10 @@ class AppState extends ChangeNotifier {
         .where('studentId', isEqualTo: studentId)
         .get();
     refs.addAll(att.docs.map((d) => d.reference));
+
+    // बदल: या मुलाच्या parent चं login profile सुद्धा काढतो, म्हणजे त्या parent ला
+    // पुढच्या login ला "Could not load data" error येत नाही.
+    refs.addAll(await _parentProfileRefs(studentId));
 
     final tRef = _db.collection('threads').doc(studentId);
     final msgs = await tRef.collection('messages').get();
@@ -997,17 +1124,20 @@ class AppState extends ChangeNotifier {
     final now = DateTime.now();
     final batchId = _db.collection('classes').doc().id;
 
-    // आधी खरे फोटो Firebase Storage वर चढवतो (एकाच वेळी), मग Firestore मध्ये नोंद.
-    final urls = await Future.wait([
-      for (var i = 0; i < list.length; i++)
-        list[i].bytes == null
-            ? Future<String?>.value(list[i].url)
-            : _uploadBytes(
-          'classes/$classId/photos/$batchId/$i.jpg',
-          list[i].bytes!,
-          'image/jpeg',
-        ),
-    ]);
+    // बदल (Spark plan): Firebase Storage ऐवजी लहान केलेला फोटो base64 म्हणून
+    // Firestore document मध्येच ठेवतो ('data:image/jpeg;base64,...').
+    // Firestore document ची मर्यादा 1 MB आहे, म्हणून मोठा फोटो नाकारतो.
+    final urls = <String?>[];
+    for (final p in list) {
+      if (p.bytes == null) {
+        urls.add(p.url);
+        continue;
+      }
+      if (p.bytes!.length > 700 * 1024) {
+        throw 'Photo is too large. Please choose a smaller photo.';
+      }
+      urls.add('data:image/jpeg;base64,${base64Encode(p.bytes!)}');
+    }
 
     final batch = _db.batch();
 
@@ -1089,6 +1219,56 @@ class AppState extends ChangeNotifier {
     });
   }
 
+  /// Teacher: पाठवलेलं circular edit करतो (title, message, category, flags, date).
+  /// readBy / ackedBy / attachment तसेच राहतात; Parent च्या list मध्ये लगेच बदल दिसतो.
+  Future<void> updateCircular(
+      String circularId, {
+        required String title,
+        required String message,
+        required String category,
+        required bool important,
+        required bool needsAck,
+        DateTime? eventDate,
+      }) async {
+    if (circularId.isEmpty) return;
+    await _classCol('circulars').doc(circularId).update({
+      'title': title.trim(),
+      'message': message.trim(),
+      'category': category,
+      'important': important,
+      'needsAck': needsAck,
+      'eventDate': eventDate == null ? null : Timestamp.fromDate(eventDate),
+      'editedAt': Timestamp.fromDate(DateTime.now()),
+    });
+  }
+
+  /// Teacher: चुकीचं circular delete करतो (Parent च्या list मधूनही जातं).
+  Future<void> deleteCircular(String circularId) async {
+    if (circularId.isEmpty) return;
+    await _classCol('circulars').doc(circularId).delete();
+  }
+
+  /// Teacher: त्या दिवसाची Diary delete करतो (diary doc id = तारीख).
+  Future<void> deleteDiary(DateTime day) async {
+    await _classCol('diary').doc(dayKey(day)).delete();
+  }
+
+  /// Teacher: एका वेळी पाठवलेले सर्व photos (एक batch) delete करतो.
+  Future<void> deletePhotoBatch(String batchId) async {
+    if (batchId.isEmpty) return;
+    final snap =
+    await _classCol('photos').where('batchId', isEqualTo: batchId).get();
+    final batch = _db.batch();
+    for (final d in snap.docs) {
+      batch.delete(d.reference);
+    }
+    // जुने photos ज्यांना batchId नाही — तेव्हा batchId = document id.
+    if (snap.docs.isEmpty) {
+      batch.delete(_classCol('photos').doc(batchId));
+    }
+    await batch.commit();
+  }
+
   Future<void> addEvent(SchoolEvent e) async {
     await _classCol('events').add({
       'date': Timestamp.fromDate(e.date),
@@ -1096,6 +1276,224 @@ class AppState extends ChangeNotifier {
       'category': e.category,
       'note': e.note,
     });
+  }
+
+  // =================================================================
+  // LEAVE (Parent अर्ज करतो → Teacher approve / decline)
+  // =================================================================
+  List<LeaveRequest> _leavesFrom(
+      List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) {
+    final list = [
+      for (final d in docs)
+        LeaveRequest(
+          id: d.id,
+          studentId: (d['studentId'] ?? '') as String,
+          studentName: (d['studentName'] ?? '') as String,
+          parentName: (d['parentName'] ?? '') as String,
+          fromDate: _dt(d['fromDate']) ?? DateTime.now(),
+          toDate: _dt(d['toDate']) ?? DateTime.now(),
+          reason: (d['reason'] ?? '') as String,
+          status: (d['status'] ?? 'pending') as String,
+          teacherNote: (d['teacherNote'] ?? '') as String,
+          createdAt: _dt(d['createdAt']) ?? DateTime.now(),
+        ),
+    ]..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    return list;
+  }
+
+  /// Teacher: या मुलाची आजच्या दिवसाची मंजूर (approved) रजा, नसेल तर null.
+  LeaveRequest? approvedLeaveToday(String studentId) {
+    final n = DateTime.now();
+    final today = DateTime(n.year, n.month, n.day);
+    for (final l in leaves) {
+      if (l.studentId != studentId || !l.isApproved) continue;
+      final from = DateTime(l.fromDate.year, l.fromDate.month, l.fromDate.day);
+      final to = DateTime(l.toDate.year, l.toDate.month, l.toDate.day);
+      if (!today.isBefore(from) && !today.isAfter(to)) return l;
+    }
+    return null;
+  }
+
+  /// Teacher: निर्णय बाकी असलेले अर्ज.
+  int get pendingLeaveCount => leaves.where((l) => l.isPending).length;
+
+  /// Parent: रजेचा अर्ज पाठवतो.
+  Future<void> submitLeave({
+    required DateTime from,
+    required DateTime to,
+    required String reason,
+  }) async {
+    if (!isParent || child.id.isEmpty) return;
+    final now = DateTime.now();
+    await _classCol('leaves').add({
+      'classId': classId,
+      'studentId': child.id,
+      'studentName': child.name,
+      'parentName': child.parentName,
+      'fromDate': Timestamp.fromDate(DateTime(from.year, from.month, from.day)),
+      'toDate': Timestamp.fromDate(DateTime(to.year, to.month, to.day)),
+      'reason': reason.trim(),
+      'status': 'pending',
+      'teacherNote': '',
+      'createdAt': Timestamp.fromDate(now),
+    });
+  }
+
+  /// Parent: निर्णय होण्यापूर्वी अर्ज मागे घेतो.
+  Future<void> cancelLeave(String leaveId) async {
+    if (leaveId.isEmpty) return;
+    await _classCol('leaves').doc(leaveId).delete();
+  }
+
+  /// Teacher: अर्ज approve / decline करतो (optional note सहित).
+  Future<void> decideLeave(String leaveId,
+      {required bool approved, String note = ''}) async {
+    if (leaveId.isEmpty) return;
+    await _classCol('leaves').doc(leaveId).update({
+      'status': approved ? 'approved' : 'declined',
+      'teacherNote': note.trim(),
+      'decidedAt': Timestamp.fromDate(DateTime.now()),
+      'decidedBy': uid,
+    });
+  }
+
+  /// Teacher ने स्वतः जोडलेले events (edit / delete साठी). Circular चे events यात नाहीत.
+  List<SchoolEvent> get classEvents {
+    final list = [..._extraEvents]..sort((a, b) => a.date.compareTo(b.date));
+    return list;
+  }
+
+  Future<void> updateEvent(SchoolEvent e) async {
+    if (e.id.isEmpty) return;
+    await _classCol('events').doc(e.id).update({
+      'date': Timestamp.fromDate(e.date),
+      'title': e.title,
+      'category': e.category,
+      'note': e.note,
+    });
+  }
+
+  Future<void> deleteEvent(String eventId) async {
+    if (eventId.isEmpty) return;
+    await _classCol('events').doc(eventId).delete();
+  }
+
+  // =================================================================
+  // FEES (Teacher)
+  // =================================================================
+  FeeItem _feeFromDoc(QueryDocumentSnapshot<Map<String, dynamic>> d) {
+    final x = d.data();
+    return FeeItem(
+      (x['title'] ?? '') as String,
+      ((x['amount'] ?? 0) as num).toInt(),
+      _feeStatus((x['status'] ?? 'upcoming') as String),
+      _dt(x['dueDate']),
+      id: d.id,
+    );
+  }
+
+  /// एका मुलाच्या सर्व fees (जुन्या `order` नुसार).
+  Future<List<FeeItem>> loadStudentFees(String studentId) async {
+    final snap = await _db
+        .collection('students')
+        .doc(studentId)
+        .collection('fees')
+        .get();
+    final docs = snap.docs.toList()
+      ..sort((a, b) => ((a.data()['order'] ?? 0) as num)
+          .compareTo((b.data()['order'] ?? 0) as num));
+    return [for (final d in docs) _feeFromDoc(d)];
+  }
+
+  /// एका मुलाच्या receipts (नवीन आधी).
+  Future<List<FeeReceipt>> loadStudentReceipts(String studentId) async {
+    final snap = await _db
+        .collection('students')
+        .doc(studentId)
+        .collection('receipts')
+        .orderBy('date', descending: true)
+        .get();
+    return [
+      for (final d in snap.docs)
+        FeeReceipt(
+          (d['title'] ?? '') as String,
+          ((d['amount'] ?? 0) as num).toInt(),
+          _dt(d['date']) ?? DateTime.now(),
+          (d['mode'] ?? '') as String,
+          id: d.id,
+          feeId: (d.data()['feeId'] ?? '') as String,
+        ),
+    ];
+  }
+
+  /// Class च्या सर्व मुलांच्या fees: studentId -> fees.
+  Future<Map<String, List<FeeItem>>> loadClassFees() async {
+    final ids = [for (final s in students) s.id];
+    final lists = await Future.wait([for (final id in ids) loadStudentFees(id)]);
+    return {for (var i = 0; i < ids.length; i++) ids[i]: lists[i]};
+  }
+
+  /// एकच fee अनेक मुलांना (whole class) जोडतो.
+  Future<void> addFeeForStudents(
+      List<String> studentIds,
+      String title,
+      int amount,
+      DateTime? dueDate, {
+        bool upcoming = false,
+      }) async {
+    final order = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    // Firestore batch मर्यादा 500 — म्हणून 400 च्या तुकड्यात.
+    for (var i = 0; i < studentIds.length; i += 400) {
+      final chunk = studentIds.skip(i).take(400);
+      final batch = _db.batch();
+      for (final id in chunk) {
+        batch.set(_db.collection('students').doc(id).collection('fees').doc(), {
+          'title': title,
+          'amount': amount,
+          'status': upcoming ? 'upcoming' : 'due',
+          'dueDate': dueDate == null ? null : Timestamp.fromDate(dueDate),
+          'order': order,
+        });
+      }
+      await batch.commit();
+    }
+  }
+
+  /// Fee बदलतो. आधीच 'paid' असलेल्या fee ची status बदलत नाही.
+  Future<void> updateFee(
+      String studentId,
+      String feeId, {
+        required String title,
+        required int amount,
+        DateTime? dueDate,
+        bool upcoming = false,
+      }) async {
+    final ref = _db
+        .collection('students')
+        .doc(studentId)
+        .collection('fees')
+        .doc(feeId);
+    final snap = await ref.get();
+    final wasPaid = snap.data()?['status'] == 'paid';
+    await ref.update({
+      'title': title,
+      'amount': amount,
+      'dueDate': dueDate == null ? null : Timestamp.fromDate(dueDate),
+      if (!wasPaid) 'status': upcoming ? 'upcoming' : 'due',
+    });
+  }
+
+  /// Fee delete; तिच्याशी जोडलेल्या receipts सुद्धा काढतो.
+  Future<void> deleteFee(String studentId, String feeId) async {
+    final sRef = _db.collection('students').doc(studentId);
+    final rec =
+    await sRef.collection('receipts').where('feeId', isEqualTo: feeId).get();
+    final batch = _db.batch();
+    for (final d in rec.docs) {
+      batch.delete(d.reference);
+    }
+    batch.delete(sRef.collection('fees').doc(feeId));
+    await batch.commit();
   }
 
   Future<void> addFee(
@@ -1148,11 +1546,12 @@ class AppState extends ChangeNotifier {
       _threads[key] = [
         for (final d in snap.docs)
           ChatMessage(
-            (d['text'] ?? '') as String,
-            (d['fromTeacher'] ?? false) as bool,
-            timeLabel(_dt(d['at']) ?? DateTime.now()),
+            (d.data()['text'] ?? '') as String,
+            (d.data()['fromTeacher'] ?? false) as bool,
+            timeLabel(_dt(d.data()['at']) ?? DateTime.now()),
             id: d.id,
-            at: _dt(d['at']),
+            at: _dt(d.data()['at']),
+            image: (d.data()['image'] ?? '') as String,
           ),
       ];
       notifyListeners();
@@ -1163,7 +1562,7 @@ class AppState extends ChangeNotifier {
   }
 
   /// Teacher साठी key = studentId. Parent साठी key आपोआप स्वतःचा child.id होतो.
-  List<ChatMessage> thread(String key, {String? seed, String seedTime = ''}) {
+  List<ChatMessage> thread(String key) {
     final k = _threadKey(key);
     _ensureThread(k);
     return _threads[k] ?? const <ChatMessage>[];
@@ -1187,10 +1586,24 @@ class AppState extends ChangeNotifier {
     return list;
   }
 
+  /// फोटो message साठी साठवला जाणारा default मजकूर (caption नसेल तेव्हा).
+  static const String photoMessageText = '📷 Photo';
+
+  /// फोटो (base64) साठी कमाल आकार – Firestore document मर्यादा 1 MB आहे.
+  static const int maxChatPhotoBytes = 700 * 1024;
+
   Future<void> sendMessage(String key, String text,
-      {required bool fromTeacher}) async {
+      {required bool fromTeacher, Uint8List? imageBytes}) async {
     final k = _threadKey(key);
-    if (k.isEmpty || text.trim().isEmpty) return;
+    final hasPhoto = imageBytes != null && imageBytes.isNotEmpty;
+    if (k.isEmpty || (text.trim().isEmpty && !hasPhoto)) return;
+    if (hasPhoto && imageBytes!.length > maxChatPhotoBytes) {
+      throw 'Photo is too large. Please choose a smaller photo.';
+    }
+    final body = text.trim().isEmpty ? photoMessageText : text.trim();
+    // बदल: कोण पाठवतो हे login role वरून ठरतं (rules मध्ये fromTeacher खोटं
+    // लिहिता येत नाही). `fromTeacher` parameter जुन्या screens साठी तसाच ठेवला आहे.
+    final sentByTeacher = !isParent;
     final now = DateTime.now();
     final student = isParent
         ? child
@@ -1199,9 +1612,10 @@ class AppState extends ChangeNotifier {
     final tRef = _db.collection('threads').doc(k);
     final batch = _db.batch();
     batch.set(tRef.collection('messages').doc(), {
-      'text': text.trim(),
-      'fromTeacher': fromTeacher,
+      'text': body,
+      'fromTeacher': sentByTeacher,
       'at': Timestamp.fromDate(now),
+      if (hasPhoto) 'image': 'data:image/jpeg;base64,${base64Encode(imageBytes!)}',
     });
     batch.set(
       tRef,
@@ -1209,9 +1623,9 @@ class AppState extends ChangeNotifier {
         'classId': classId,
         'studentName': student.name,
         'parentName': student.parentName,
-        'lastText': text.trim(),
+        'lastText': body,
         'lastAt': Timestamp.fromDate(now),
-        if (fromTeacher)
+        if (sentByTeacher)
           'parentUnread': FieldValue.increment(1)
         else
           'teacherUnread': FieldValue.increment(1),
@@ -1243,9 +1657,6 @@ class AppState extends ChangeNotifier {
       lastError = '$e';
     }
   }
-
-  /// जुना call (messages_screen) — आता काही करत नाही; markThreadRead वापरा.
-  void markRead(int count) {}
 
   // =================================================================
   // PARENT READ HELPERS

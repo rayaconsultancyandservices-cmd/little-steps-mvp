@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../state/app_state.dart';
 import 'admin_state.dart';
@@ -19,6 +20,7 @@ class _AdminStudentsScreenState extends State<AdminStudentsScreen> {
   String? _genderFilter; // null = सर्व gender
   String? _parentFilter; // null = सर्व parent-app statuses
   String _sortBy = 'Class & roll';
+  final Set<String> _selected = {};
 
   @override
   void dispose() {
@@ -52,8 +54,8 @@ class _AdminStudentsScreenState extends State<AdminStudentsScreen> {
       context,
       title: 'Delete ${c.name}?',
       message: 'The student and everything linked to this child (fees, '
-          'receipts, attendance, chat and the parent login profile) will be '
-          'removed permanently. This cannot be undone.',
+          'receipts, attendance, chat, leave requests and the parent login '
+          'profile) will be removed permanently. This cannot be undone.',
     );
     if (!ok) return;
     try {
@@ -62,6 +64,321 @@ class _AdminStudentsScreenState extends State<AdminStudentsScreen> {
     } catch (e) {
       if (mounted) adminSnack(context, AdminState.errorText(e), error: true);
     }
+  }
+
+  /// Parent email मध्ये काही अडचण असेल तर त्याचा मजकूर (नाहीतर null).
+  String? _emailIssue(ChildInfo c, Map<String, int> counts) {
+    final m = c.parentEmail.trim().toLowerCase();
+    if (m.isEmpty) return 'No parent email';
+    if ((counts[m] ?? 0) > 1) return 'Email used by ${counts[m]} students';
+    return null;
+  }
+
+  Future<void> _showProfile(ChildInfo c) async {
+    final s = AdminState.instance;
+    final att = s.attendance.where((r) => r.studentId == c.id).toList();
+    final present = att.where((r) => r.isPresent).length;
+    final absent = att.where((r) => r.status == 'A').length;
+    final pct = att.isEmpty ? null : (present * 100 / att.length).round();
+    final dues = s.fees
+        .where((f) => f.studentId == c.id && f.status == FeeStatus.due)
+        .toList();
+    final dueTotal = dues.fold<int>(0, (a, f) => a + f.amount);
+    final paid = s.receipts
+        .where((r) => r.studentId == c.id)
+        .fold<int>(0, (a, r) => a + r.amount);
+    final leaves = s.leaves.where((l) => l.studentId == c.id).toList();
+    final joined = s.parentJoined(c);
+
+    Widget kv(String k, String v) => Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 120,
+            child: Text(k,
+                style: const TextStyle(
+                    color: AdminColors.muted,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700)),
+          ),
+          Expanded(
+            child: Text(v.isEmpty ? '—' : v,
+                style: const TextStyle(
+                    color: AdminColors.dark,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700)),
+          ),
+        ],
+      ),
+    );
+
+    Widget head(String t) => Padding(
+      padding: const EdgeInsets.only(top: 14, bottom: 4),
+      child: Text(t,
+          style: const TextStyle(
+              color: AdminColors.primary,
+              fontSize: 11,
+              fontWeight: FontWeight.w900,
+              letterSpacing: 0.4)),
+    );
+
+    final action = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: Colors.white,
+        surfaceTintColor: Colors.transparent,
+        title: Row(
+          children: [
+            AdminAvatar(name: c.name, size: 40),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(c.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+                  Text('${c.className}  •  Roll ${c.rollNo}',
+                      style: const TextStyle(
+                          fontSize: 11,
+                          color: AdminColors.muted,
+                          fontWeight: FontWeight.w600)),
+                ],
+              ),
+            ),
+          ],
+        ),
+        content: SizedBox(
+          width: 460,
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                head('STUDENT'),
+                kv('Gender', c.gender),
+                kv('Date of birth',
+                    '${fmtDate(c.dob)}  (${c.ageLabel(DateTime.now())})'),
+                kv('Blood group', c.bloodGroup),
+                kv('Allergy / medical', c.allergyNote),
+                kv('Pickup note', c.pickupNote),
+                head('PARENT / GUARDIAN'),
+                kv('Name', c.parentName),
+                kv('Email', c.parentEmail),
+                kv('Parent app', joined ? 'Joined' : 'Not joined yet'),
+                for (final x in c.contacts)
+                  kv(x.relation.isEmpty ? 'Contact' : x.relation,
+                      '${x.name}  ${x.phone}'.trim()),
+                head('ATTENDANCE (LAST ${AdminState.attendanceWindowDays} DAYS)'),
+                kv('Attendance',
+                    pct == null ? 'Not marked yet' : '$pct%  ($present present · $absent absent · ${att.length} days marked)'),
+                head('FEES'),
+                kv('Pending',
+                    dues.isEmpty ? 'No pending fees' : '${fmtMoney(dueTotal)}  (${dues.length} item(s))'),
+                kv('Paid so far', fmtMoney(paid)),
+                head('LEAVE REQUESTS'),
+                kv('Total',
+                    leaves.isEmpty
+                        ? 'None'
+                        : '${leaves.length}  (${leaves.where((l) => l.status == 'pending').length} pending · ${leaves.where((l) => l.status == 'approved').length} approved)'),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Close'),
+          ),
+          FilledButton.icon(
+            style: adminPrimaryButton(),
+            onPressed: () => Navigator.pop(ctx, 'edit'),
+            icon: const Icon(Icons.edit_outlined, size: 16),
+            label: const Text('Edit'),
+          ),
+        ],
+      ),
+    );
+    if (action == 'edit') _openForm(existing: c);
+  }
+
+  Future<void> _bulkMove(List<ChildInfo> chosen) async {
+    final s = AdminState.instance;
+    if (s.classes.isEmpty || chosen.isEmpty) return;
+    String? selected;
+
+    final target = await showDialog<AdminClass>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setD) => AlertDialog(
+          backgroundColor: Colors.white,
+          surfaceTintColor: Colors.transparent,
+          title: Text('Move ${chosen.length} student(s)'),
+          content: SizedBox(
+            width: 380,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                AdminDropdown<String>(
+                  label: 'Move to class',
+                  width: 380,
+                  value: selected,
+                  items: [
+                    for (final c in s.classes)
+                      DropdownMenuItem(value: c.id, child: Text(c.className)),
+                  ],
+                  onChanged: (v) => setD(() => selected = v),
+                ),
+                const SizedBox(height: 10),
+                const Text(
+                  'New roll numbers are given automatically. Parents and '
+                      'chat are moved to the new class too.',
+                  style: TextStyle(fontSize: 11, color: AdminColors.muted),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              style: adminPrimaryButton(),
+              onPressed: selected == null
+                  ? null
+                  : () => Navigator.pop(
+                  ctx, s.classes.firstWhere((c) => c.id == selected)),
+              child: const Text('Move'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (target == null) return;
+
+    try {
+      var roll = s.nextRollFor(target.id);
+      var moved = 0;
+      final ordered = [...chosen]
+        ..sort((a, b) => a.rollNo.compareTo(b.rollNo));
+      for (final c in ordered) {
+        if (c.classId == target.id) continue;
+        final updated = ChildInfo(
+          id: c.id,
+          name: c.name,
+          className: target.className,
+          classId: target.id,
+          rollNo: roll++,
+          dob: c.dob,
+          bloodGroup: c.bloodGroup,
+          gender: c.gender,
+          allergyNote: c.allergyNote,
+          parentName: c.parentName,
+          parentEmail: c.parentEmail,
+          pickupNote: c.pickupNote,
+          contacts: c.contacts,
+        );
+        await s.saveStudent(updated, previous: c);
+        moved++;
+      }
+      if (mounted) {
+        setState(_selected.clear);
+        adminSnack(context, '$moved student(s) moved to ${target.className}');
+      }
+    } catch (e) {
+      if (mounted) adminSnack(context, AdminState.errorText(e), error: true);
+    }
+  }
+
+  Future<void> _bulkDelete(List<ChildInfo> chosen) async {
+    if (chosen.isEmpty) return;
+    final ok = await adminConfirm(
+      context,
+      title: 'Delete ${chosen.length} student(s)?',
+      message: 'All selected students and everything linked to them (fees, '
+          'receipts, attendance, chat, leave requests and parent login '
+          'profiles) will be removed permanently. This cannot be undone.',
+      confirmText: 'Delete ${chosen.length}',
+    );
+    if (!ok) return;
+    try {
+      for (final c in chosen) {
+        await AdminState.instance.deleteStudent(c.id);
+      }
+      if (mounted) {
+        setState(_selected.clear);
+        adminSnack(context, '${chosen.length} student(s) deleted');
+      }
+    } catch (e) {
+      if (mounted) adminSnack(context, AdminState.errorText(e), error: true);
+    }
+  }
+
+  Future<void> _copyCsv(List<ChildInfo> list) async {
+    String esc(String v) => '"${v.replaceAll('"', '""')}"';
+    final buf = StringBuffer(
+        'Name,Class,Roll,Gender,Date of birth,Blood group,Parent,Parent email,Parent phone\n');
+    for (final c in list) {
+      buf.writeln([
+        c.name,
+        c.className,
+        '${c.rollNo}',
+        c.gender,
+        fmtDate(c.dob),
+        c.bloodGroup,
+        c.parentName,
+        c.parentEmail,
+        c.contacts.isNotEmpty ? c.contacts.first.phone : '',
+      ].map(esc).join(','));
+    }
+    await Clipboard.setData(ClipboardData(text: buf.toString()));
+    if (mounted) {
+      adminSnack(context, '${list.length} students copied as CSV (paste in Excel)');
+    }
+  }
+
+  Widget _bulkBar(List<ChildInfo> shown) {
+    final chosen =
+    AdminState.instance.students.where((c) => _selected.contains(c.id)).toList();
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: AdminColors.greenLight,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Wrap(
+        spacing: 10,
+        runSpacing: 6,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          Text('${chosen.length} selected',
+              style: const TextStyle(
+                  color: AdminColors.dark,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800)),
+          OutlinedButton.icon(
+            style: adminSecondaryButton(),
+            onPressed: () => _bulkMove(chosen),
+            icon: const Icon(Icons.drive_file_move_outlined, size: 16),
+            label: const Text('Move to class'),
+          ),
+          OutlinedButton.icon(
+            style: adminSecondaryButton(),
+            onPressed: () => _bulkDelete(chosen),
+            icon: const Icon(Icons.delete_outline_rounded,
+                size: 16, color: AdminColors.red),
+            label: const Text('Delete'),
+          ),
+          TextButton(
+            onPressed: () => setState(_selected.clear),
+            child: const Text('Clear selection'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -73,11 +390,36 @@ class _AdminStudentsScreenState extends State<AdminStudentsScreen> {
         final boys = s.students.where((c) => c.gender == 'Boy').length;
         final girls = s.students.where((c) => c.gender == 'Girl').length;
         final joined = s.students.where(s.parentJoined).length;
+
+        // --- per-student helpers (email issues, attendance %, fees due) ---
+        final emailCounts = <String, int>{};
+        for (final c in s.students) {
+          final m = c.parentEmail.trim().toLowerCase();
+          if (m.isNotEmpty) emailCounts[m] = (emailCounts[m] ?? 0) + 1;
+        }
+        final emailIssues =
+            s.students.where((c) => _emailIssue(c, emailCounts) != null).length;
+        final attMap = <String, List<int>>{}; // [present, marked]
+        for (final r in s.attendance) {
+          final v = attMap.putIfAbsent(r.studentId, () => [0, 0]);
+          v[1]++;
+          if (r.isPresent) v[0]++;
+        }
+        final dueMap = <String, int>{};
+        for (final f in s.fees) {
+          if (f.status == FeeStatus.due) {
+            dueMap[f.studentId] = (dueMap[f.studentId] ?? 0) + f.amount;
+          }
+        }
         final list = s.students.where((c) {
           if (_classFilter != null && c.classId != _classFilter) return false;
           if (_genderFilter != null && c.gender != _genderFilter) return false;
           if (_parentFilter == 'joined' && !s.parentJoined(c)) return false;
           if (_parentFilter == 'not_joined' && s.parentJoined(c)) return false;
+          if (_parentFilter == 'issues' &&
+              _emailIssue(c, emailCounts) == null) {
+            return false;
+          }
           if (_q.isEmpty) return true;
           return '${c.name} ${c.parentName} ${c.parentEmail} '
               '${c.rollNo} ${c.className} '
@@ -149,6 +491,7 @@ class _AdminStudentsScreenState extends State<AdminStudentsScreen> {
                 DropdownMenuItem<String?>(value: null, child: Text('All parents')),
                 DropdownMenuItem<String?>(value: 'joined', child: Text('Joined')),
                 DropdownMenuItem<String?>(value: 'not_joined', child: Text('Not joined')),
+                DropdownMenuItem<String?>(value: 'issues', child: Text('Email issues')),
               ],
               onChanged: (v) => setState(() => _parentFilter = v),
             ),
@@ -216,6 +559,18 @@ class _AdminStudentsScreenState extends State<AdminStudentsScreen> {
                     color: AdminColors.orange,
                     onTap: () => setState(() => _parentFilter = 'joined'),
                   ),
+                  _StudentMetricCard(
+                    icon: Icons.alternate_email_rounded,
+                    label: 'Parent email issues',
+                    value: '$emailIssues',
+                    note: emailIssues == 0
+                        ? 'All emails look good'
+                        : 'Missing or duplicate email',
+                    color: emailIssues == 0
+                        ? AdminColors.green
+                        : AdminColors.red,
+                    onTap: () => setState(() => _parentFilter = 'issues'),
+                  ),
                 ],
               ),
               const SizedBox(height: 22),
@@ -227,6 +582,25 @@ class _AdminStudentsScreenState extends State<AdminStudentsScreen> {
                   runSpacing: 6,
                   children: [
                     StatusChip('${list.length} shown', AdminColors.blue),
+                    TextButton.icon(
+                      onPressed: list.isEmpty
+                          ? null
+                          : () => setState(() {
+                        final ids = list.map((c) => c.id).toSet();
+                        if (_selected.containsAll(ids)) {
+                          _selected.removeAll(ids);
+                        } else {
+                          _selected.addAll(ids);
+                        }
+                      }),
+                      icon: const Icon(Icons.checklist_rounded, size: 15),
+                      label: const Text('Select all shown'),
+                    ),
+                    TextButton.icon(
+                      onPressed: list.isEmpty ? null : () => _copyCsv(list),
+                      icon: const Icon(Icons.copy_all_rounded, size: 15),
+                      label: const Text('Copy CSV'),
+                    ),
                     if (_classFilter != null || _genderFilter != null ||
                         _parentFilter != null || _q.isNotEmpty)
                       TextButton.icon(
@@ -251,6 +625,7 @@ class _AdminStudentsScreenState extends State<AdminStudentsScreen> {
                       'Showing ${list.length} of ${s.students.length} records',
                       icon: Icons.school_rounded,
                     ),
+                    if (_selected.isNotEmpty) _bulkBar(list),
                     if (s.students.isEmpty)
                       const EmptyState(
                         'No students yet. Add a student profile or ask a '
@@ -266,14 +641,28 @@ class _AdminStudentsScreenState extends State<AdminStudentsScreen> {
                       AdminTable(
                         emptyText: 'No student records found.',
                         columns: const [
-                          'Student', 'Roll', 'Class', 'Gender', 'Age',
+                          '', 'Student', 'Roll', 'Class', 'Gender', 'Age',
+                          'Attendance', 'Fees due',
                           'Parent / guardian', 'Parent contact', 'Parent app',
                           'Actions',
                         ],
                         rows: [
                           for (final c in list)
                             DataRow(
+                              selected: _selected.contains(c.id),
                               cells: [
+                                DataCell(
+                                  Checkbox(
+                                    value: _selected.contains(c.id),
+                                    onChanged: (v) => setState(() {
+                                      if (v == true) {
+                                        _selected.add(c.id);
+                                      } else {
+                                        _selected.remove(c.id);
+                                      }
+                                    }),
+                                  ),
+                                ),
                                 DataCell(
                                   SizedBox(
                                     width: 165,
@@ -310,6 +699,19 @@ class _AdminStudentsScreenState extends State<AdminStudentsScreen> {
                                 cellText(c.className),
                                 cellText(c.gender),
                                 cellText(c.ageLabel(DateTime.now())),
+                                cellText(
+                                  (attMap[c.id]?[1] ?? 0) == 0
+                                      ? '—'
+                                      : '${((attMap[c.id]![0] * 100) / attMap[c.id]![1]).round()}%',
+                                ),
+                                cellText(
+                                  (dueMap[c.id] ?? 0) == 0
+                                      ? '—'
+                                      : fmtMoney(dueMap[c.id]!),
+                                  color: (dueMap[c.id] ?? 0) == 0
+                                      ? null
+                                      : AdminColors.red,
+                                ),
                                 DataCell(
                                   SizedBox(
                                     width: 145,
@@ -353,6 +755,15 @@ class _AdminStudentsScreenState extends State<AdminStudentsScreen> {
                                               fontSize: 10,
                                             ),
                                           ),
+                                        if (_emailIssue(c, emailCounts) != null)
+                                          Text(
+                                            _emailIssue(c, emailCounts)!,
+                                            style: const TextStyle(
+                                              color: AdminColors.red,
+                                              fontSize: 9,
+                                              fontWeight: FontWeight.w700,
+                                            ),
+                                          ),
                                       ],
                                     ),
                                   ),
@@ -369,6 +780,12 @@ class _AdminStudentsScreenState extends State<AdminStudentsScreen> {
                                   Row(
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
+                                      AdminIconAction(
+                                        icon: Icons.visibility_outlined,
+                                        tooltip: 'View profile',
+                                        onPressed: () => _showProfile(c),
+                                      ),
+                                      const SizedBox(width: 6),
                                       AdminIconAction(
                                         icon: Icons.edit_outlined,
                                         tooltip: 'Edit student',

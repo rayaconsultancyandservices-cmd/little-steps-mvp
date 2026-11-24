@@ -149,14 +149,14 @@ class _PhotosScreenState extends State<PhotosScreen> {
       if (source == 'Camera') {
         final f = await _picker.pickImage(
           source: ImageSource.camera,
-          maxWidth: 1600,
-          imageQuality: 80,
+          maxWidth: 720,
+          imageQuality: 45,
         );
         picked = f == null ? <XFile>[] : <XFile>[f];
       } else {
         picked = await _picker.pickMultiImage(
-          maxWidth: 1600,
-          imageQuality: 80,
+          maxWidth: 720,
+          imageQuality: 45,
         );
       }
       if (picked.isEmpty || !mounted) return;
@@ -790,6 +790,9 @@ class _PhotosScreenState extends State<PhotosScreen> {
 
                 // SEND SECTION (appears after the caption)
                 _buildSendSection(),
+
+                // नवीन: आधी पाठवलेले photos (चुकीचे delete करण्यासाठी)
+                _sentSection(),
               ],
             ),
           ),
@@ -802,6 +805,151 @@ class _PhotosScreenState extends State<PhotosScreen> {
   // ---------------------------------------------------------------
   // WIDGETS
   // ---------------------------------------------------------------
+  // ---------------------------------------------------------------
+  // नवीन: SENT PHOTOS (delete)
+  // ---------------------------------------------------------------
+  Widget _sentSection() {
+    return ListenableBuilder(
+      listenable: AppState.instance,
+      builder: (context, _) {
+        final batches = AppState.instance.photoBatches.take(8).toList();
+        if (batches.isEmpty) return const SizedBox.shrink();
+
+        return Padding(
+          padding: const EdgeInsets.only(top: 24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _sectionLabel('SENT PHOTOS'),
+              const SizedBox(height: 8),
+              for (final b in batches) _sentCard(b),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _sentCard(PhotoBatch b) {
+    final n = b.photos.length;
+    final title = b.caption.trim().isNotEmpty
+        ? b.caption.trim()
+        : '$n photo${n == 1 ? '' : 's'}';
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 9),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFE5ECE9)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            height: 40,
+            width: 40,
+            decoration: BoxDecoration(
+              color: AppColors.primaryLight,
+              borderRadius: BorderRadius.circular(11),
+            ),
+            child: const Icon(
+              Icons.photo_library_rounded,
+              color: _primary,
+              size: 20,
+            ),
+          ),
+          const SizedBox(width: 11),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: _dark,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  '$n photo${n == 1 ? '' : 's'} · '
+                      '${b.wholeClass ? 'Whole class' : 'Tagged children'} · '
+                      '${AppState.relativeDay(b.sentAt)}, '
+                      '${AppState.timeLabel(b.sentAt)}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: _muted, fontSize: 10),
+                ),
+              ],
+            ),
+          ),
+          InkWell(
+            onTap: () => _deleteSent(b),
+            borderRadius: BorderRadius.circular(10),
+            child: const Padding(
+              padding: EdgeInsets.all(6),
+              child: Icon(
+                Icons.delete_outline_rounded,
+                size: 20,
+                color: Color(0xFFE5484D),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _deleteSent(PhotoBatch b) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text(
+          'Delete these photos?',
+          style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
+        ),
+        content: Text(
+          '${b.photos.length} photo(s) will also be removed from parents.',
+          style: const TextStyle(color: _muted, fontSize: 13),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: TextButton.styleFrom(
+              foregroundColor: const Color(0xFFE5484D),
+            ),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+
+    try {
+      await AppState.instance.deletePhotoBatch(b.batchId);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(const SnackBar(content: Text('Photos deleted.')));
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          const SnackBar(content: Text('Could not delete. Please try again.')),
+        );
+    }
+  }
+
   Widget _sectionLabel(String text) {
     return Text(
       text,

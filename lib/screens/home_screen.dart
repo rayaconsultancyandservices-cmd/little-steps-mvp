@@ -179,31 +179,34 @@ class _HomeScreenState extends State<HomeScreen> {
               children: [
                 Row(
                   children: [
-                    Container(
-                      height: 49,
-                      width: 49,
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        shape: BoxShape.circle,
-                        border: Border.all(
-                          color: Colors.white.withValues(alpha: 0.6),
-                          width: 2,
-                        ),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withValues(alpha: 0.12),
-                            blurRadius: 12,
-                            offset: const Offset(0, 4),
+                    GestureDetector(
+                      onTap: () => _go(6), // नवीन: avatar दाबल्यावर My Profile
+                      child: Container(
+                        height: 49,
+                        width: 49,
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: Colors.white.withValues(alpha: 0.6),
+                            width: 2,
                           ),
-                        ],
-                      ),
-                      alignment: Alignment.center,
-                      child: Text(
-                        _initial(s.teacherName),
-                        style: const TextStyle(
-                          color: primaryDark,
-                          fontSize: 21,
-                          fontWeight: FontWeight.w900,
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: 0.12),
+                              blurRadius: 12,
+                              offset: const Offset(0, 4),
+                            ),
+                          ],
+                        ),
+                        alignment: Alignment.center,
+                        child: Text(
+                          _initial(s.teacherName),
+                          style: const TextStyle(
+                            color: primaryDark,
+                            fontSize: 21,
+                            fontWeight: FontWeight.w900,
+                          ),
                         ),
                       ),
                     ),
@@ -390,6 +393,43 @@ class _HomeScreenState extends State<HomeScreen> {
                 light: const Color(0xFFFFEDF3),
                 count: s.unreadMessages,
                 onTap: () => _go(5),
+              ),
+              // नवीन: My Profile (माहिती, password बदल, logout)
+              _tile(
+                width: width,
+                icon: Icons.account_circle_rounded,
+                label: 'My Profile',
+                color: const Color(0xFF5A7D8C),
+                light: const Color(0xFFE8F0F3),
+                onTap: () => _go(6),
+              ),
+              // नवीन: Fees — fees जोडणं / Paid करणं (Parent ला लगेच दिसतं)
+              _tile(
+                width: width,
+                icon: Icons.account_balance_wallet_rounded,
+                label: 'Fees',
+                color: const Color(0xFF2E9B5E),
+                light: const Color(0xFFE6F6EC),
+                onTap: () => _go(7),
+              ),
+              // नवीन: Events — Parent च्या Calendar मध्ये दिसणारे events
+              _tile(
+                width: width,
+                icon: Icons.event_rounded,
+                label: 'Events',
+                color: const Color(0xFFD5604B),
+                light: const Color(0xFFFFEDE9),
+                onTap: () => _go(8),
+              ),
+              // नवीन: Leave — Parent चे रजेचे अर्ज (बाकी अर्जांची संख्या दिसते)
+              _tile(
+                width: width,
+                icon: Icons.event_busy_rounded,
+                label: 'Leave',
+                color: const Color(0xFF8066C8),
+                light: const Color(0xFFF0ECFF),
+                count: s.pendingLeaveCount,
+                onTap: () => _go(9),
               ),
             ];
 

@@ -17,9 +17,6 @@ class _Student {
   bool touched = false; // Teacher ने या session मध्ये स्वतः mark केलं का
   String? status;
   String? reason; // absence reason
-  int? aiConfidence;
-  bool aiUnsure = false;
-  bool notSeen = false;
 }
 
 class AttendanceScreen extends StatefulWidget {
@@ -53,8 +50,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   final List<_Student> students = [];
 
   int selectedFilter = 0;
-  bool aiScanned = false;
-  bool isScanning = false;
   bool isSaving = false;
   String searchQuery = '';
 
@@ -133,8 +128,12 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         student.status = status;
       }
       if (student.status != _kAbsent) student.reason = null;
-      student.aiUnsure = false;
-      student.notSeen = false;
+      // नवीन: मंजूर रजा असेल तर Absent चं कारण आपोआप भरतो.
+      if (student.status == _kAbsent &&
+          student.reason == null &&
+          AppState.instance.approvedLeaveToday(student.id) != null) {
+        student.reason = 'Approved leave';
+      }
     });
   }
 
@@ -219,98 +218,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   }
 
   // ---------------------------------------------------------------
-  // (वापरात नाही) जुना AI CAMERA DEMO – खऱ्या camera/AI integration नंतर इथे येईल
-  // ---------------------------------------------------------------
-  Future<void> scanWithCamera() async {
-    if (isScanning) return;
-
-    setState(() => isScanning = true);
-
-    showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => const AlertDialog(
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.all(Radius.circular(20)),
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            SizedBox(
-              height: 55,
-              width: 55,
-              child: CircularProgressIndicator(
-                color: primary,
-                strokeWidth: 4,
-              ),
-            ),
-            SizedBox(height: 18),
-            Text(
-              'Scanning Classroom...',
-              style: TextStyle(
-                fontSize: 15,
-                fontWeight: FontWeight.w800,
-                color: dark,
-              ),
-            ),
-            SizedBox(height: 7),
-            Text(
-              'AI attendance demo is processing.',
-              textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 11),
-            ),
-          ],
-        ),
-      ),
-    );
-
-    await Future<void>.delayed(const Duration(seconds: 2));
-
-    if (!mounted) return;
-
-    Navigator.of(context).pop();
-
-    const unsure = {2, 9};
-    const notSeen = {4, 15};
-
-    setState(() {
-      isScanning = false;
-      aiScanned = true;
-
-      for (int i = 0; i < students.length; i++) {
-        final student = students[i];
-
-        student.touched = true;
-        student.aiUnsure = false;
-        student.notSeen = false;
-        student.reason = null;
-
-        if (unsure.contains(i)) {
-          student.status = null;
-          student.aiConfidence = 62;
-          student.aiUnsure = true;
-        } else if (notSeen.contains(i)) {
-          student.status = null;
-          student.aiConfidence = null;
-          student.notSeen = true;
-        } else {
-          student.status = _kPresent;
-          student.aiConfidence = 90 + (i * 3) % 10;
-        }
-      }
-    });
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          'Demo scan completed. $present students marked present. Please verify.',
-        ),
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
-  }
-
-  // ---------------------------------------------------------------
   // SAVE
   // ---------------------------------------------------------------
   Future<void> saveAttendance() async {
@@ -360,8 +267,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           if (student.status == null) {
             student.touched = true;
             student.status = _kAbsent;
-            student.aiUnsure = false;
-            student.notSeen = false;
           }
         }
       });
@@ -506,7 +411,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                   ],
                 ),
 
-                // खोटा 'AI Classroom Scan' काढला (तो random मुलं present दाखवत होता).
                 const SizedBox(height: 18),
 
                 // SEARCH
@@ -792,75 +696,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     );
   }
 
-  // Compact AI scan strip
-  Widget _buildScanCard() {
-    return Material(
-      borderRadius: BorderRadius.circular(16),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: scanWithCamera,
-        child: Ink(
-          padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 11),
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(
-              colors: [Color(0xFF104F58), Color(0xFF168C80)],
-              begin: Alignment.centerLeft,
-              end: Alignment.centerRight,
-            ),
-          ),
-          child: Row(
-            children: [
-              Container(
-                height: 36,
-                width: 36,
-                decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.2),
-                  borderRadius: BorderRadius.circular(11),
-                ),
-                child: const Icon(
-                  Icons.center_focus_strong_rounded,
-                  color: Colors.white,
-                  size: 20,
-                ),
-              ),
-              const SizedBox(width: 11),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      aiScanned ? 'Scan Again' : 'AI Classroom Scan',
-                      style: const TextStyle(
-                        fontSize: 12.5,
-                        fontWeight: FontWeight.w800,
-                        color: Colors.white,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      aiScanned
-                          ? 'Review AI results before saving'
-                          : 'Auto-mark students using the camera',
-                      style: TextStyle(
-                        fontSize: 10,
-                        color: Colors.white.withValues(alpha: 0.85),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const Icon(
-                Icons.arrow_forward_ios_rounded,
-                color: Colors.white,
-                size: 14,
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
   Widget _buildSearch() {
     return TextField(
       controller: searchController,
@@ -952,9 +787,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     Color avatarText = primary;
 
     if (isPresent) {
-      subtitle = student.aiConfidence != null
-          ? 'Present · AI ${student.aiConfidence}%'
-          : 'Present';
+      subtitle = 'Present';
       subtitleColor = green;
       ring = green;
     } else if (isLate) {
@@ -967,18 +800,16 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           : 'Absent · Add reason';
       subtitleColor = red;
       ring = red;
-    } else if (student.aiUnsure) {
-      subtitle = 'AI unsure — please verify';
-      subtitleColor = orange;
-    } else if (student.notSeen) {
-      subtitle = 'Not detected in scan';
-      subtitleColor = orange;
+    } else if (AppState.instance.approvedLeaveToday(student.id) != null) {
+      // नवीन: Parent ची रजा मंजूर आहे — Teacher ला आधीच कळतं.
+      subtitle = 'On approved leave today';
+      subtitleColor = const Color(0xFF8066C8);
     }
 
     if (student.status == null) avatarText = primary;
 
     return GestureDetector(
-      onLongPress: () => _confirmRemove(student),
+      onLongPress: () => _openStudentActions(student),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
         color: isAbsent
@@ -1099,6 +930,115 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     } catch (e) {
       if (!mounted) return;
       _snack('Could not add student: $e');
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // EDIT / REMOVE  (बदल: long-press वर आता Edit आणि Remove दोन्ही पर्याय)
+  // ---------------------------------------------------------------
+  Future<void> _openStudentActions(_Student student) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(8, 12, 8, 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                height: 4,
+                width: 40,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFDDE5E2),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 14),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    student.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w800,
+                      color: dark,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 4),
+              ListTile(
+                leading: const Icon(Icons.edit_rounded, color: primary),
+                title: const Text(
+                  'Edit student details',
+                  style: TextStyle(fontWeight: FontWeight.w700),
+                ),
+                onTap: () => Navigator.pop(ctx, 'edit'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.person_remove_rounded, color: red),
+                title: const Text(
+                  'Remove student',
+                  style: TextStyle(fontWeight: FontWeight.w700, color: red),
+                ),
+                onTap: () => Navigator.pop(ctx, 'remove'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (!mounted) return;
+    if (action == 'edit') {
+      await _openEditStudent(student);
+    } else if (action == 'remove') {
+      await _confirmRemove(student);
+    }
+  }
+
+  Future<void> _openEditStudent(_Student student) async {
+    final found = AppState.instance.students.where((c) => c.id == student.id);
+    if (found.isEmpty) {
+      _snack('Student not found. Please try again.');
+      return;
+    }
+    final previous = found.first;
+
+    final updated = await showModalBottomSheet<ChildInfo>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (_) =>
+          _AddStudentSheet(nextRoll: previous.rollNo, existing: previous),
+    );
+    if (updated == null || !mounted) return;
+
+    try {
+      await AppState.instance.updateStudent(updated, previous: previous);
+      if (!mounted) return;
+      final newMail = updated.parentEmail.trim().toLowerCase();
+      final mailChanged =
+          previous.parentEmail.trim().toLowerCase() != newMail;
+      _snack(
+        mailChanged
+            ? '${updated.name} updated. Old parent login removed; '
+            'new parent can login with $newMail'
+            : '${updated.name} updated.',
+      );
+    } catch (e) {
+      if (!mounted) return;
+      _snack('Could not update student: $e');
     }
   }
 
@@ -1238,9 +1178,12 @@ class _LegendDot extends StatelessWidget {
 // ADD STUDENT SHEET
 // =====================================================================
 class _AddStudentSheet extends StatefulWidget {
-  const _AddStudentSheet({required this.nextRoll});
+  const _AddStudentSheet({required this.nextRoll, this.existing});
 
   final int nextRoll;
+
+  /// null = नवीन विद्यार्थी जोडणे; नाहीतर या विद्यार्थ्याची माहिती edit करणे.
+  final ChildInfo? existing;
 
   @override
   State<_AddStudentSheet> createState() => _AddStudentSheetState();
@@ -1267,10 +1210,35 @@ class _AddStudentSheetState extends State<_AddStudentSheet> {
     'A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-',
   ];
 
+  bool get _isEdit => widget.existing != null;
+
+  /// Edit करताना parent email बदलला का (जुन्या parent चं login निघून जातं).
+  bool get _emailChanged =>
+      _isEdit &&
+          _email.text.trim().toLowerCase() !=
+              widget.existing!.parentEmail.trim().toLowerCase();
+
   @override
   void initState() {
     super.initState();
-    _roll.text = '${widget.nextRoll}';
+    final e = widget.existing;
+    if (e == null) {
+      _roll.text = '${widget.nextRoll}';
+    } else {
+      _name.text = e.name;
+      _roll.text = '${e.rollNo}';
+      _parent.text = e.parentName;
+      _email.text = e.parentEmail;
+      _phone.text = e.contacts.isNotEmpty ? e.contacts.first.phone : '';
+      _allergy.text = e.allergyNote;
+      _dob = e.dob;
+      _gender = e.gender == 'Girl' ? 'Girl' : 'Boy';
+      _blood = _bloodGroups.contains(e.bloodGroup) ? e.bloodGroup : null;
+      // email बदलला की खाली warning दाखवण्यासाठी.
+      _email.addListener(() {
+        if (mounted) setState(() {});
+      });
+    }
   }
 
   @override
@@ -1308,10 +1276,13 @@ class _AddStudentSheetState extends State<_AddStudentSheet> {
 
   Future<void> _pickDob() async {
     final now = DateTime.now();
+    final initial = _dob ?? DateTime(now.year - 3, 1, 1);
+    final earliest = DateTime(now.year - 10);
     final d = await showDatePicker(
       context: context,
-      initialDate: _dob ?? DateTime(now.year - 3, 1, 1),
-      firstDate: DateTime(now.year - 10),
+      initialDate: initial,
+      // जुनी dob 10 वर्षांपेक्षा जुनी असली तरी picker crash होत नाही.
+      firstDate: initial.isBefore(earliest) ? initial : earliest,
       lastDate: now,
     );
     if (d != null) setState(() => _dob = d);
@@ -1320,11 +1291,33 @@ class _AddStudentSheetState extends State<_AddStudentSheet> {
   void _submit() {
     if (!_formKey.currentState!.validate()) return;
     final phone = _phone.text.trim();
+    final e = widget.existing;
+
+    // Edit करताना बाकीचे contacts (आई/बाबा/आजी...) पुसले जाऊ नयेत.
+    final contacts = <ParentContact>[...(e?.contacts ?? const <ParentContact>[])];
+    if (phone.isNotEmpty) {
+      if (contacts.isEmpty) {
+        contacts.add(ParentContact(_parent.text.trim(), 'Parent', phone));
+      } else {
+        final c0 = contacts.first;
+        contacts[0] = ParentContact(
+          c0.name.isEmpty ? _parent.text.trim() : c0.name,
+          c0.relation.isEmpty ? 'Parent' : c0.relation,
+          phone,
+        );
+      }
+    } else if (contacts.isNotEmpty) {
+      contacts.removeAt(0);
+    }
+
     Navigator.pop(
       context,
       ChildInfo(
+        id: e?.id ?? '',
         name: _name.text.trim(),
-        className: '', // AppState.addStudent() class चं नाव स्वतः भरतो
+        // नवीन: AppState.addStudent() class चं नाव स्वतः भरतो; Edit: आधीचं तेच.
+        className: e?.className ?? '',
+        classId: e?.classId ?? '',
         rollNo: int.tryParse(_roll.text.trim()) ?? widget.nextRoll,
         dob: _dob ?? DateTime(DateTime.now().year - 3, 1, 1),
         bloodGroup: _blood ?? '',
@@ -1332,10 +1325,8 @@ class _AddStudentSheetState extends State<_AddStudentSheet> {
         allergyNote: _allergy.text.trim(),
         parentName: _parent.text.trim(),
         parentEmail: _email.text.trim().toLowerCase(),
-        pickupNote: '',
-        contacts: phone.isEmpty
-            ? const []
-            : [ParentContact(_parent.text.trim(), 'Parent', phone)],
+        pickupNote: e?.pickupNote ?? '',
+        contacts: contacts,
       ),
     );
   }
@@ -1366,17 +1357,19 @@ class _AddStudentSheetState extends State<_AddStudentSheet> {
                   ),
                 ),
                 const SizedBox(height: 16),
-                const Text(
-                  'Add student',
-                  style: TextStyle(
+                Text(
+                  _isEdit ? 'Edit student' : 'Add student',
+                  style: const TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.w800,
                     color: dark,
                   ),
                 ),
                 const SizedBox(height: 3),
-                const Text(
-                  'Parent can login with the email you enter here.',
+                Text(
+                  _isEdit
+                      ? 'Update the details and tap Save changes.'
+                      : 'Parent can login with the email you enter here.',
                   style: TextStyle(fontSize: 11, color: muted),
                 ),
                 const SizedBox(height: 14),
@@ -1479,6 +1472,18 @@ class _AddStudentSheetState extends State<_AddStudentSheet> {
                     return ok ? null : 'Enter a valid email';
                   },
                 ),
+                if (_emailChanged) ...[
+                  const SizedBox(height: 6),
+                  const Text(
+                    "Changing the email removes the old parent's login. "
+                        'The new email can login right away.',
+                    style: TextStyle(
+                      fontSize: 10.5,
+                      color: Color(0xFFD99437),
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 10),
                 TextFormField(
                   controller: _phone,
@@ -1504,9 +1509,9 @@ class _AddStudentSheetState extends State<_AddStudentSheet> {
                         borderRadius: BorderRadius.circular(14),
                       ),
                     ),
-                    child: const Text(
-                      'Add student',
-                      style: TextStyle(fontWeight: FontWeight.w700),
+                    child: Text(
+                      _isEdit ? 'Save changes' : 'Add student',
+                      style: const TextStyle(fontWeight: FontWeight.w700),
                     ),
                   ),
                 ),

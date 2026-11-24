@@ -5,6 +5,7 @@ import '../widgets/parent_widgets.dart';
 import 'parent_attendance_screen.dart';
 import 'parent_calendar_screen.dart';
 import 'parent_child_profile_screen.dart';
+import 'parent_leave_screen.dart';
 import 'parent_message_screen.dart';
 import 'parent_notification_screen.dart';
 
@@ -779,6 +780,10 @@ class _ParentHomeScreenState extends State<ParentHomeScreen>
         const SizedBox(width: 8),
         item(Icons.currency_rupee_rounded, 'Fees', () => widget.onNavigate(4),
             dot: feeDue),
+        // नवीन: रजेचा अर्ज
+        const SizedBox(width: 8),
+        item(Icons.event_busy_rounded, 'Leave',
+                () => _push(context, const ParentLeaveScreen())),
       ],
     );
   }

@@ -45,3 +45,6 @@ flutter:
     - assets/images/smart_school_splash_books.png
     - assets/images/parent_splash_pencil.png
     - assets/images/parent_icon.png
+    - assets/images/admin/cta_school.jpg
+    - assets/images/admin/hero_classroom.jpg
+    - assets/images/admin/insights_dashboard.png

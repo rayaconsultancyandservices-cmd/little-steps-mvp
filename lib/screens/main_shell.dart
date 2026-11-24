@@ -1,4 +1,3 @@
-
 import 'package:flutter/material.dart';
 
 import '../theme/app_colors.dart';
@@ -9,6 +8,10 @@ import 'photos_screen.dart';
 import 'diary_screen.dart';
 import 'circular_screen.dart';
 import 'messages_screen.dart';
+import 'teacher_profile_screen.dart';
+import 'fees_screen.dart';
+import 'events_screen.dart';
+import 'leave_screen.dart';
 
 class MainShell extends StatefulWidget {
   const MainShell({super.key});
@@ -24,12 +27,16 @@ class _MainShellState extends State<MainShell> {
   // 2 Photos
   // 3 Diary
   // 4 Circulars
-  // 5 Messages
+  // 5 Messages   (Home वरून उघडतो)
+  // 6 My Profile  (Home वरून उघडतो)
+  // 7 Fees       (Home वरून उघडतो) - नवीन
+  // 8 Events     (Home वरून उघडतो) - नवीन
+  // 9 Leave      (Home वरून उघडतो) - नवीन
 
   int _selectedIndex = 0;
 
   void _goToTab(int index) {
-    if (index < 0 || index > 5) return;
+    if (index < 0 || index > 9) return;
 
     setState(() {
       _selectedIndex = index;
@@ -49,6 +56,17 @@ class _MainShellState extends State<MainShell> {
       DiaryScreen(onBack: _goHome),
       CircularScreen(onBack: _goHome),
       MessagesScreen(onBack: _goHome),
+      TeacherProfileScreen(onBack: _goHome),
+      // नवीन: Fees आणि Events — फक्त उघडल्यावर तयार होतात (लगेच fresh data).
+      _selectedIndex == 7
+          ? TeacherFeesScreen(onBack: _goHome)
+          : const SizedBox.shrink(),
+      _selectedIndex == 8
+          ? TeacherEventsScreen(onBack: _goHome)
+          : const SizedBox.shrink(),
+      _selectedIndex == 9
+          ? TeacherLeaveScreen(onBack: _goHome)
+          : const SizedBox.shrink(),
     ];
 
     return Scaffold(
@@ -67,7 +85,7 @@ class _MainShellState extends State<MainShell> {
   }
 
   Widget _buildBottomNavigation() {
-    // Messages screen opens from Home, so Home remains highlighted.
+    // Messages आणि My Profile Home वरून उघडतात, म्हणून Home highlighted राहतो.
     final activeIndex = _selectedIndex > 4 ? 0 : _selectedIndex;
 
     const items = [

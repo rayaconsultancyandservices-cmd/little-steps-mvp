@@ -210,6 +210,67 @@ class AuthService {
   // ------------------------------------------------------------------
   // COMMON
   // ------------------------------------------------------------------
+
+  /// नवीन: login असलेल्या user चा `users/{uid}` profile (name, phone, employeeId...).
+  /// Login नसेल किंवा वाचता आलं नाही तर null.
+  static Future<Map<String, dynamic>?> myProfile() async {
+    final user = _auth.currentUser;
+    if (user == null) return null;
+    try {
+      final snap = await _db.collection('users').doc(user.uid).get();
+      return snap.data();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// नवीन: स्वतःचा phone बदलतो. (Rules: role / classId / approved बदलता येत नाहीत,
+  /// phone बदलता येतो.) यशस्वी झाल्यास null, नाहीतर error text.
+  static Future<String?> updateMyPhone(String phone) async {
+    final user = _auth.currentUser;
+    if (user == null) return 'Please login first.';
+    try {
+      await _db.collection('users').doc(user.uid).update({
+        'phone': phone.trim(),
+      });
+      return null;
+    } catch (e) {
+      return _message(e);
+    }
+  }
+
+  /// नवीन: Password बदलतो. आधी जुन्या password ने पुन्हा verify (re-authenticate)
+  /// करतो, मग नवीन password सेट करतो. यशस्वी झाल्यास null, नाहीतर error text.
+  static Future<String?> changePassword({
+    required String currentPassword,
+    required String newPassword,
+  }) async {
+    final user = _auth.currentUser;
+    final email = user?.email;
+    if (user == null || email == null) return 'Please login again.';
+    try {
+      final cred = EmailAuthProvider.credential(
+        email: email,
+        password: currentPassword,
+      );
+      await user.reauthenticateWithCredential(cred);
+      await user.updatePassword(newPassword);
+      return null;
+    } on FirebaseAuthException catch (e) {
+      switch (e.code) {
+        case 'wrong-password':
+        case 'invalid-credential':
+          return 'Current password is wrong.';
+        case 'weak-password':
+          return 'New password is too weak.';
+        case 'requires-recent-login':
+          return 'Please logout and login again, then change the password.';
+      }
+      return _message(e);
+    } catch (e) {
+      return _message(e);
+    }
+  }
   static Future<String?> resetPassword(String email) async {
     try {
       await _auth.sendPasswordResetEmail(email: _email(email));

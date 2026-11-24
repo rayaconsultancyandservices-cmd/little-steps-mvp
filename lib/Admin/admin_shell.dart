@@ -8,6 +8,7 @@ import 'admin_classes.dart';
 import 'admin_dashboard.dart';
 import 'admin_diary.dart';
 import 'admin_fees.dart';
+import 'admin_leaves.dart';
 import 'admin_messages.dart';
 import 'admin_parents.dart';
 import 'admin_photos.dart';
@@ -50,6 +51,8 @@ class _AdminShellState extends State<AdminShell> {
     _NavItem('Photo Gallery', Icons.photo_library_rounded),
     _NavItem('Messages', Icons.forum_rounded),
     _NavItem('Reports & Export', Icons.download_rounded),
+    // NEW (index 12): Parents चे रजेचे अर्ज
+    _NavItem('Leave Requests', Icons.event_busy_rounded),
   ];
 
   final GlobalKey<ScaffoldState> _scaffoldKey =
@@ -89,6 +92,8 @@ class _AdminShellState extends State<AdminShell> {
         return const AdminMessagesScreen();
       case 11:
         return const AdminReportsScreen();
+      case 12:
+        return const AdminLeavesScreen();
       default:
         return AdminDashboardScreen(onNavigate: _go);
     }
@@ -258,6 +263,8 @@ class _AdminShellState extends State<AdminShell> {
         ? state.pendingTeachersCount
         : i == 10
         ? state.teacherUnreadTotal
+        : i == 12
+        ? state.pendingLeaves.length
         : 0;
 
     return Padding(
@@ -568,8 +575,12 @@ class _AdminShellState extends State<AdminShell> {
                   for (int i = 1; i <= 4; i++) _navTile(i),
                   _sectionLabel('Daily operations'),
                   for (int i = 5; i <= 6; i++) _navTile(i),
+                  _navTile(12), // NEW: Leave Requests
                   _sectionLabel('Communication & activities'),
                   for (int i = 7; i <= 10; i++) _navTile(i),
+                  // FIXED: Reports & Export आधी sidebar मध्ये नव्हतं (unreachable).
+                  _sectionLabel('Insights & export'),
+                  _navTile(11),
                   const SizedBox(height: 15),
                 ],
               ),

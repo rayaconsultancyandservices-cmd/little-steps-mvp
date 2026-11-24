@@ -453,6 +453,54 @@ class AdminMessage {
   }
 }
 
+class AdminLeave {
+  const AdminLeave({
+    required this.id,
+    required this.classId,
+    required this.studentId,
+    required this.studentName,
+    required this.reason,
+    required this.status,
+    required this.fromDate,
+    required this.toDate,
+    required this.createdAt,
+    this.parentName = '',
+    this.teacherNote = '',
+    this.decidedAt,
+  });
+
+  final String id;
+  final String classId;
+  final String studentId;
+  final String studentName;
+  final String parentName;
+  final String reason;
+  final String status; // pending / approved / declined
+  final String teacherNote; // निर्णयासोबत दिलेली note
+  final DateTime? fromDate;
+  final DateTime? toDate;
+  final DateTime? createdAt;
+  final DateTime? decidedAt;
+
+  factory AdminLeave.fromDoc(QueryDocumentSnapshot<Map<String, dynamic>> d) {
+    final x = d.data();
+    return AdminLeave(
+      id: d.id,
+      classId: _s(x['classId']),
+      studentId: _s(x['studentId']),
+      studentName: _s(x['studentName']),
+      parentName: _s(x['parentName']),
+      reason: _s(x['reason']),
+      status: _s(x['status']).isEmpty ? 'pending' : _s(x['status']),
+      teacherNote: _s(x['teacherNote']),
+      fromDate: _date(x['fromDate']),
+      toDate: _date(x['toDate']),
+      createdAt: _date(x['createdAt']),
+      decidedAt: _date(x['decidedAt']),
+    );
+  }
+}
+
 // =====================================================================
 // ADMIN STATE
 // ---------------------------------------------------------------------
@@ -491,6 +539,7 @@ class AdminState extends ChangeNotifier {
   List<AdminDiary> diaries = [];
   List<AdminPhoto> photos = [];
   List<AdminThread> threads = [];
+  List<AdminLeave> leaves = [];
 
   /// Fees / receipts फक्त अस्तित्वात असलेल्या students चे (delete केलेल्या मुलांचे
   /// उरलेले जुने records totals मध्ये मोजले जाऊ नयेत म्हणून).
@@ -611,6 +660,7 @@ class AdminState extends ChangeNotifier {
     diaries = [];
     photos = [];
     threads = [];
+    leaves = [];
     notifyListeners();
   }
 
@@ -735,6 +785,12 @@ class AdminState extends ChangeNotifier {
           if (tb == null) return -1;
           return tb.compareTo(ta);
         });
+    });
+
+    _listen(_db.collectionGroup('leaves'), (snap) {
+      leaves = [for (final d in snap.docs) AdminLeave.fromDoc(d)]
+        ..sort((a, b) => (b.createdAt ?? DateTime(2000))
+            .compareTo(a.createdAt ?? DateTime(2000)));
     });
   }
 
@@ -934,6 +990,26 @@ class AdminState extends ChangeNotifier {
         {'teacherName': '', 'teacherUid': ''},
         SetOptions(merge: true),
       );
+    }
+    await batch.commit();
+  }
+
+  /// Teacher ला class मधून काढतो (login तसंच राहतं).
+  Future<void> unassignTeacher(AdminTeacher t) async {
+    final batch = _db.batch();
+    batch.update(_db.collection('users').doc(t.uid), {
+      'className': '',
+      'classId': '',
+    });
+    if (t.classId.isNotEmpty) {
+      final cls = classes.where((c) => c.id == t.classId).toList();
+      if (cls.isNotEmpty && cls.first.teacherUid == t.uid) {
+        batch.set(
+          _db.collection('classes').doc(t.classId),
+          {'teacherName': '', 'teacherUid': ''},
+          SetOptions(merge: true),
+        );
+      }
     }
     await batch.commit();
   }
@@ -1197,6 +1273,38 @@ class AdminState extends ChangeNotifier {
       .delete();
 
   // =================================================================
+  // LEAVE REQUESTS  (classes/{classId}/leaves/{id})
+  // Admin ला Firestore rules मध्ये leaves वर पूर्ण read/write आहे.
+  // =================================================================
+  DocumentReference<Map<String, dynamic>> _leaveRef(AdminLeave l) => _db
+      .collection('classes')
+      .doc(l.classId)
+      .collection('leaves')
+      .doc(l.id);
+
+  /// Admin: अर्ज approve / decline करतो (optional note सहित).
+  Future<void> decideLeave(AdminLeave l,
+      {required bool approved, String note = ''}) =>
+      _leaveRef(l).update({
+        'status': approved ? 'approved' : 'declined',
+        'teacherNote': note.trim(),
+        'decidedAt': Timestamp.fromDate(DateTime.now()),
+        'decidedBy': uid,
+        'decidedByRole': 'admin',
+      });
+
+  /// Admin: घेतलेला निर्णय मागे घेऊन अर्ज पुन्हा pending करतो.
+  Future<void> reopenLeave(AdminLeave l) => _leaveRef(l).update({
+    'status': 'pending',
+    'teacherNote': '',
+    'decidedAt': FieldValue.delete(),
+    'decidedBy': FieldValue.delete(),
+    'decidedByRole': FieldValue.delete(),
+  });
+
+  Future<void> deleteLeave(AdminLeave l) => _leaveRef(l).delete();
+
+  // =================================================================
   // EXTRA READ HELPERS (dashboard / diary / photos / chat)
   // =================================================================
   int get pendingTeachersCount => teachers.where((t) => !t.approved).length;
@@ -1218,6 +1326,23 @@ class AdminState extends ChangeNotifier {
   /// Teacher ने उत्तर न दिलेले (unread) parent messages.
   int get teacherUnreadTotal =>
       threads.fold<int>(0, (n, t) => n + t.teacherUnread);
+
+  List<AdminLeave> get pendingLeaves =>
+      leaves.where((l) => l.status == 'pending').toList();
+
+  /// आज approved रजेवर असलेल्या मुलांचे ids.
+  Set<String> get onLeaveStudentIds {
+    final n = DateTime.now();
+    final today = DateTime(n.year, n.month, n.day);
+    return leaves.where((l) {
+      if (l.status != 'approved' || l.fromDate == null || l.toDate == null) {
+        return false;
+      }
+      final f = DateTime(l.fromDate!.year, l.fromDate!.month, l.fromDate!.day);
+      final t = DateTime(l.toDate!.year, l.toDate!.month, l.toDate!.day);
+      return !today.isBefore(f) && !today.isAfter(t);
+    }).map((l) => l.studentId).toSet();
+  }
 
   // =================================================================
   // TEACHER EDIT
@@ -1335,6 +1460,7 @@ class AdminState extends ChangeNotifier {
   // =================================================================
   Future<void> updateAdminProfile({
     required String name,
+
     required String school,
   }) async {
     await _db.collection('users').doc(uid).update({

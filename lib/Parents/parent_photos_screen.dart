@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -744,6 +746,17 @@ class _PhotoArt extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final u = url;
+    // बदल: Teacher चा फोटो 'data:image/jpeg;base64,...' स्वरूपात येतो (Spark plan).
+    if (u != null && u.startsWith('data:')) {
+      final bytes = _decode(u);
+      if (bytes == null) return _placeholder();
+      return Image.memory(
+        bytes,
+        fit: BoxFit.cover,
+        gaplessPlayback: true,
+        errorBuilder: (_, __, ___) => _placeholder(),
+      );
+    }
     if (u != null && u.isNotEmpty) {
       return Image.network(
         u,
@@ -755,6 +768,22 @@ class _PhotoArt extends StatelessWidget {
       );
     }
     return _placeholder();
+  }
+
+  // वारंवार decode होऊ नये म्हणून cache.
+  static final Map<String, Uint8List> _cache = {};
+
+  static Uint8List? _decode(String dataUri) {
+    final hit = _cache[dataUri];
+    if (hit != null) return hit;
+    try {
+      final b = UriData.parse(dataUri).contentAsBytes();
+      if (_cache.length > 60) _cache.clear();
+      _cache[dataUri] = b;
+      return b;
+    } catch (_) {
+      return null;
+    }
   }
 
   Widget _placeholder() {

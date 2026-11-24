@@ -63,18 +63,19 @@ class _DiaryScreenState extends State<DiaryScreen> {
 
   final Set<String> _bring = <String>{};
 
+  // बदल: dummy मजकूर काढला — फक्त रिकामे fields (Teacher स्वतः भरते).
   final List<_DiaryItem> _items = [
-    _DiaryItem('Rhyme', 'Twinkle Twinkle Little Star'),
-    _DiaryItem('Letter', 'A — Apple, Ant'),
-    _DiaryItem('Number', 'Counting 1 to 5'),
-    _DiaryItem('Colour', 'Red'),
-    _DiaryItem('Activity', 'Colouring an apple'),
+    _DiaryItem('Rhyme', ''),
+    _DiaryItem('Letter', ''),
+    _DiaryItem('Number', ''),
+    _DiaryItem('Colour', ''),
+    _DiaryItem('Activity', ''),
   ];
 
-  final TextEditingController _homeNote = TextEditingController(
-    text: 'Please practise the rhyme at home. '
-        'Send a red-coloured object tomorrow.',
-  );
+  final TextEditingController _homeNote = TextEditingController();
+
+  // आजची diary आधी publish झाली असेल तर ती fields मध्ये एकदा भरतो.
+  bool _loadedExisting = false;
 
   String? _mood;
   bool _notifyParents = true;
@@ -88,7 +89,92 @@ class _DiaryScreenState extends State<DiaryScreen> {
   bool get _published => AppState.instance.diaryPublished;
 
   @override
+  void initState() {
+    super.initState();
+    AppState.instance.addListener(_loadExistingDiary);
+    _loadExistingDiary();
+  }
+
+  /// नवीन: आज publish केलेली diary (Firestore मधून) fields मध्ये भरतो,
+  /// म्हणजे Teacher ला 'Update' करताना जुना मजकूर दिसतो आणि रिकामं publish होत नाही.
+  void _loadExistingDiary() {
+    if (_loadedExisting) return;
+    final post = AppState.instance.diaryFor(DateTime.now());
+    if (post == null) return;
+    _loadedExisting = true;
+
+    for (final line in post.items) {
+      final i = _items.indexWhere(
+              (e) => e.label.toLowerCase() == line.label.toLowerCase());
+      if (i >= 0) {
+        _items[i].controller.text = line.text;
+      } else {
+        _items.add(_DiaryItem(line.label, line.text, custom: true));
+      }
+    }
+    _homeNote.text = post.homeNote;
+    _mood = post.mood;
+    for (final b in post.bring) {
+      if (!_bringOptions.contains(b)) _bringOptions.add(b);
+      _bring.add(b);
+    }
+    if (mounted) setState(() {});
+  }
+
+  /// नवीन: आजची diary delete करतो (Parent च्या Diary मधूनही जाते).
+  Future<void> _deleteDiary() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text(
+          'Delete today’s diary?',
+          style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
+        ),
+        content: const Text(
+          'It will also be removed from all parents.',
+          style: TextStyle(color: _muted, fontSize: 13),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: TextButton.styleFrom(foregroundColor: const Color(0xFFE5484D)),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+
+    try {
+      await AppState.instance.deleteDiary(DateTime.now());
+    } catch (_) {
+      if (!mounted) return;
+      _showMessage('Could not delete diary. Please try again.');
+      return;
+    }
+    if (!mounted) return;
+
+    setState(() {
+      for (final item in _items) {
+        item.controller.clear();
+      }
+      _homeNote.clear();
+      _mood = null;
+      _bring.clear();
+      _publishedAt = null;
+      _loadedExisting = false;
+    });
+    _showMessage('Diary deleted.');
+  }
+
+  @override
   void dispose() {
+    AppState.instance.removeListener(_loadExistingDiary);
     for (final item in _items) {
       item.dispose();
     }
@@ -874,6 +960,19 @@ class _DiaryScreenState extends State<DiaryScreen> {
                         fontSize: 11,
                         height: 1.5,
                         fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  // नवीन: Delete
+                  InkWell(
+                    onTap: _deleteDiary,
+                    borderRadius: BorderRadius.circular(10),
+                    child: const Padding(
+                      padding: EdgeInsets.all(2),
+                      child: Icon(
+                        Icons.delete_outline_rounded,
+                        size: 20,
+                        color: Color(0xFFE5484D),
                       ),
                     ),
                   ),

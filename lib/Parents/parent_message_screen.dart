@@ -1,5 +1,9 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:image_picker/image_picker.dart';
 
 import '../state/app_state.dart';
 import '../theme/app_colors.dart';
@@ -49,6 +53,11 @@ class _ParentMessageScreenState extends State<ParentMessageScreen> {
   bool _showJump = false;
   int _lastCount = 0;
 
+  // NEW: पाठवायचा बाकी असलेला फोटो (preview) + decode केलेल्या फोटोंचा cache.
+  Uint8List? _pendingPhoto;
+  bool _sending = false;
+  final Map<String, Uint8List> _imageCache = {};
+
   String get _key => AppState.instance.child.id;
 
   @override
@@ -90,18 +99,121 @@ class _ParentMessageScreenState extends State<ParentMessageScreen> {
     }
   }
 
+  // ---------- photo attach ----------
+  Future<void> _pickPhoto() async {
+    final source = await showModalBottomSheet<ImageSource>(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 8),
+            ListTile(
+              leading: const Icon(Icons.photo_camera_outlined,
+                  color: ParentColors.primary),
+              title: const Text('Take a photo'),
+              onTap: () => Navigator.pop(ctx, ImageSource.camera),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library_outlined,
+                  color: ParentColors.primary),
+              title: const Text('Choose from gallery'),
+              onTap: () => Navigator.pop(ctx, ImageSource.gallery),
+            ),
+            const SizedBox(height: 6),
+          ],
+        ),
+      ),
+    );
+    if (source == null || !mounted) return;
+
+    try {
+      // फोटो लहान करून घेतो म्हणजे Firestore मध्ये मावेल.
+      final picked = await ImagePicker().pickImage(
+        source: source,
+        maxWidth: 1024,
+        imageQuality: 70,
+      );
+      if (picked == null) return;
+      final bytes = await picked.readAsBytes();
+      if (!mounted) return;
+      if (bytes.length > AppState.maxChatPhotoBytes) {
+        showSnack(context, 'Photo is too large. Please choose a smaller photo.');
+        return;
+      }
+      setState(() => _pendingPhoto = bytes);
+    } catch (_) {
+      if (mounted) showSnack(context, 'Could not open the photo. Please try again.');
+    }
+  }
+
   Future<void> _send() async {
     final text = _controller.text.trim();
-    if (text.isEmpty) return;
+    final photo = _pendingPhoto;
+    if ((text.isEmpty && photo == null) || _sending) return;
+    setState(() {
+      _sending = true;
+      _pendingPhoto = null;
+    });
     _controller.clear();
     WidgetsBinding.instance.addPostFrameCallback((_) => _toBottom());
     try {
-      await AppState.instance.sendMessage(_key, text, fromTeacher: false);
-    } catch (_) {
+      await AppState.instance
+          .sendMessage(_key, text, fromTeacher: false, imageBytes: photo);
+    } catch (e) {
       if (!mounted) return;
       _controller.text = text; // हरवू नये म्हणून परत टाकतो
-      showSnack(context, 'Message not sent. Please check your internet.');
+      setState(() => _pendingPhoto = photo);
+      showSnack(
+        context,
+        e is String ? e : 'Message not sent. Please check your internet.',
+      );
+    } finally {
+      if (mounted) setState(() => _sending = false);
     }
+  }
+
+  Uint8List? _imageOf(ChatMessage m) {
+    if (!m.hasImage) return null;
+    final cached = _imageCache[m.id];
+    if (cached != null) return cached;
+    try {
+      final comma = m.image.indexOf(',');
+      final bytes = base64Decode(comma < 0 ? m.image : m.image.substring(comma + 1));
+      if (m.id.isNotEmpty) _imageCache[m.id] = bytes;
+      return bytes;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  void _openPhoto(Uint8List bytes) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.black,
+        insetPadding: const EdgeInsets.all(12),
+        child: Stack(
+          children: [
+            InteractiveViewer(
+              child: Center(child: Image.memory(bytes, fit: BoxFit.contain)),
+            ),
+            Positioned(
+              top: 4,
+              right: 4,
+              child: IconButton(
+                onPressed: () => Navigator.pop(ctx),
+                icon: const Icon(Icons.close_rounded, color: Colors.white),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   void _useQuickReply(String text) {
@@ -111,6 +223,7 @@ class _ParentMessageScreenState extends State<ParentMessageScreen> {
   }
 
   Future<void> _copyMessage(ChatMessage m) async {
+    if (m.isPhotoOnly) return; // फक्त फोटो असेल तर copy करायला मजकूर नाही
     await Clipboard.setData(ClipboardData(text: m.text));
     if (mounted) showSnack(context, 'Message copied');
   }
@@ -119,7 +232,9 @@ class _ParentMessageScreenState extends State<ParentMessageScreen> {
   @override
   Widget build(BuildContext context) {
     final s = AppState.instance;
-    final hasText = _controller.text.trim().isNotEmpty;
+    // बदल: फोटो निवडलेला असेल तरी Send सुरू होतं.
+    final hasText =
+        _controller.text.trim().isNotEmpty || _pendingPhoto != null;
 
     return Scaffold(
       backgroundColor: ParentColors.pageBg,
@@ -204,6 +319,7 @@ class _ParentMessageScreenState extends State<ParentMessageScreen> {
               ),
             ),
             if (!hasText) _quickReplyRow(),
+            if (_pendingPhoto != null) _photoPreview(),
             _inputBar(hasText),
           ],
         ),
@@ -457,11 +573,27 @@ class _ParentMessageScreenState extends State<ParentMessageScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
-              Text(m.text,
-                  style: TextStyle(
-                      fontSize: 13.5,
-                      height: 1.4,
-                      color: mine ? Colors.white : AppColors.text)),
+              if (_imageOf(m) != null) ...[
+                GestureDetector(
+                  onTap: () => _openPhoto(_imageOf(m)!),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: Image.memory(
+                      _imageOf(m)!,
+                      width: 220,
+                      fit: BoxFit.cover,
+                      gaplessPlayback: true,
+                    ),
+                  ),
+                ),
+                if (!m.isPhotoOnly) const SizedBox(height: 6),
+              ],
+              if (!m.isPhotoOnly)
+                Text(m.text,
+                    style: TextStyle(
+                        fontSize: 13.5,
+                        height: 1.4,
+                        color: mine ? Colors.white : AppColors.text)),
               const SizedBox(height: 4),
               Row(
                 mainAxisSize: MainAxisSize.min,
@@ -520,6 +652,49 @@ class _ParentMessageScreenState extends State<ParentMessageScreen> {
     );
   }
 
+  // ---------- photo preview (पाठवण्यापूर्वी) ----------
+  Widget _photoPreview() {
+    return Container(
+      width: double.infinity,
+      color: Colors.white,
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: Image.memory(
+                _pendingPhoto!,
+                height: 86,
+                width: 86,
+                fit: BoxFit.cover,
+              ),
+            ),
+            Positioned(
+              top: -6,
+              right: -6,
+              child: GestureDetector(
+                onTap: () => setState(() => _pendingPhoto = null),
+                child: Container(
+                  width: 22,
+                  height: 22,
+                  decoration: const BoxDecoration(
+                    color: ParentColors.dark,
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.close_rounded,
+                      size: 14, color: Colors.white),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   // ---------- input ----------
   Widget _inputBar(bool hasText) {
     return Container(
@@ -535,8 +710,7 @@ class _ParentMessageScreenState extends State<ParentMessageScreen> {
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
               GestureDetector(
-                onTap: () => showSnack(
-                    context, 'Photo attachments will be added later.'),
+                onTap: _sending ? null : _pickPhoto,
                 child: Container(
                   width: 42,
                   height: 42,
