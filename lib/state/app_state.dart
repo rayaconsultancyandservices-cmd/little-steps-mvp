@@ -1529,6 +1529,19 @@ class AppState extends ChangeNotifier {
     await batch.commit();
   }
 
+  /// नवीन: चुकून "paid" केलेली fee परत "due" करतो (receipt सुद्धा काढतो).
+  Future<void> markFeeUnpaid(String studentId, FeeItem fee) async {
+    final ref = _db.collection('students').doc(studentId);
+    final rec =
+    await ref.collection('receipts').where('feeId', isEqualTo: fee.id).get();
+    final batch = _db.batch();
+    for (final d in rec.docs) {
+      batch.delete(d.reference);
+    }
+    batch.update(ref.collection('fees').doc(fee.id), {'status': 'due'});
+    await batch.commit();
+  }
+
   // =================================================================
   // CHAT  (Teacher ↔ Parent एकच thread; thread key = studentId)
   // =================================================================

@@ -5,6 +5,7 @@ import 'package:little_steps_mvp/Parents/parent_child_profile_screen.dart';
 import 'package:little_steps_mvp/Parents/parent_diary_screen.dart';
 import 'package:little_steps_mvp/Parents/parent_fees_screen.dart';
 import 'package:little_steps_mvp/Parents/parent_home_screen.dart';
+import 'package:little_steps_mvp/Parents/parent_leave_screen.dart';
 import 'package:little_steps_mvp/Parents/parent_message_screen.dart';
 import 'package:little_steps_mvp/Parents/parent_photos_screen.dart';
 
@@ -32,7 +33,12 @@ class _ParentShellState extends State<ParentShell> {
   /// fee banner, notifications). Fees is no longer a tab, so open it
   /// as its own screen with a back arrow.
   void _openFromHome(int i) {
-    if (i == 5) {
+    if (i == 6) {
+      // Notification / Home card मधून "Leave" उघडतो.
+      Navigator.of(context).push(
+        MaterialPageRoute<void>(builder: (_) => const ParentLeaveScreen()),
+      );
+    } else if (i == 5) {
       // Notification मधून "Message from teacher" उघडतो.
       Navigator.of(context).push(
         MaterialPageRoute<void>(builder: (_) => const ParentMessageScreen()),

@@ -557,6 +557,42 @@ class _StudentFeesPageState extends State<_StudentFeesPage> {
     );
   }
 
+  Future<void> _markUnpaid(FeeItem f) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text(
+          'Mark as unpaid?',
+          style: TextStyle(fontWeight: FontWeight.w800),
+        ),
+        content: Text(
+          '${f.title} (${_money(f.amount)}) will go back to pending and '
+              'its receipt will be removed for ${widget.studentName}.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: _orange,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Mark unpaid'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    await _run(
+          () => AppState.instance.markFeeUnpaid(widget.studentId, f),
+      'Marked as unpaid. Receipt removed.',
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final pending = _fees.where((f) => f.status != FeeStatus.paid).toList();
@@ -851,6 +887,16 @@ class _StudentFeesPageState extends State<_StudentFeesPage> {
               fontWeight: FontWeight.w900,
               color: _green,
             ),
+          ),
+          // नवीन: चुकीचं "paid" परत करण्यासाठी
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert_rounded, color: _muted),
+            onSelected: (v) {
+              if (v == 'unpaid') _markUnpaid(f);
+            },
+            itemBuilder: (_) => const [
+              PopupMenuItem(value: 'unpaid', child: Text('Mark unpaid')),
+            ],
           ),
         ],
       ),

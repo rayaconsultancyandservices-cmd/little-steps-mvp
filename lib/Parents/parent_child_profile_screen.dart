@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../services/auth_service.dart';
 import '../state/app_state.dart';
 import '../theme/app_colors.dart';
 import '../widgets/parent_widgets.dart';
@@ -64,6 +65,9 @@ class ParentChildProfileScreen extends StatelessWidget {
                       ],
                       const SizedBox(height: 16),
                       _changeButton(context),
+                      const SizedBox(height: 10),
+                      // नवीन: Parent साठी Change password
+                      _passwordButton(context),
                       const SizedBox(height: 12),
                       _note(),
                     ],
@@ -574,6 +578,49 @@ class ParentChildProfileScreen extends StatelessWidget {
   }
 
   // ---------- request change ----------
+  Future<void> _changePassword(BuildContext context) async {
+    final ok = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (_) => const _ParentChangePasswordSheet(),
+    );
+    if (ok == true && context.mounted) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(const SnackBar(
+          content: Text('Password changed successfully.'),
+          behavior: SnackBarBehavior.floating,
+        ));
+    }
+  }
+
+  Widget _passwordButton(BuildContext context) {
+    return SizedBox(
+      width: double.infinity,
+      height: 46,
+      child: OutlinedButton.icon(
+        onPressed: () => _changePassword(context),
+        icon: const Icon(Icons.lock_reset_rounded, size: 18),
+        label: const Text(
+          'Change password',
+          style: TextStyle(fontWeight: FontWeight.w800),
+        ),
+        style: OutlinedButton.styleFrom(
+          foregroundColor: ParentColors.primary,
+          side: const BorderSide(color: ParentColors.border),
+          backgroundColor: Colors.white,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _changeButton(BuildContext context) {
     return SizedBox(
       width: double.infinity,
@@ -792,6 +839,214 @@ class _ChangeRequestSheetState extends State<_ChangeRequestSheet> {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// नवीन: Parent साठी password बदलण्याची bottom sheet.
+class _ParentChangePasswordSheet extends StatefulWidget {
+  const _ParentChangePasswordSheet();
+
+  @override
+  State<_ParentChangePasswordSheet> createState() =>
+      _ParentChangePasswordSheetState();
+}
+
+class _ParentChangePasswordSheetState
+    extends State<_ParentChangePasswordSheet> {
+  final _formKey = GlobalKey<FormState>();
+  final _current = TextEditingController();
+  final _new = TextEditingController();
+  final _confirm = TextEditingController();
+
+  bool _showCurrent = false;
+  bool _showNew = false;
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _current.dispose();
+    _new.dispose();
+    _confirm.dispose();
+    super.dispose();
+  }
+
+  InputDecoration _dec(String label, bool visible, VoidCallback toggle) =>
+      InputDecoration(
+        labelText: label,
+        filled: true,
+        fillColor: ParentColors.tint,
+        isDense: true,
+        contentPadding:
+        const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: ParentColors.border),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: ParentColors.border),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: ParentColors.primary, width: 1.4),
+        ),
+        suffixIcon: IconButton(
+          onPressed: toggle,
+          icon: Icon(
+            visible ? Icons.visibility_off_rounded : Icons.visibility_rounded,
+            size: 19,
+            color: ParentColors.muted,
+          ),
+        ),
+      );
+
+  Future<void> _submit() async {
+    if (_busy || !_formKey.currentState!.validate()) return;
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    final err = await AuthService.changePassword(
+      currentPassword: _current.text,
+      newPassword: _new.text,
+    );
+    if (!mounted) return;
+    if (err == null) {
+      Navigator.pop(context, true);
+    } else {
+      setState(() {
+        _busy = false;
+        _error = err;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bottom = MediaQuery.of(context).viewInsets.bottom;
+    return Padding(
+      padding: EdgeInsets.fromLTRB(18, 14, 18, 14 + bottom),
+      child: SafeArea(
+        top: false,
+        child: SingleChildScrollView(
+          child: Form(
+            key: _formKey,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    height: 4,
+                    width: 40,
+                    decoration: BoxDecoration(
+                      color: ParentColors.border,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  'Change password',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                    color: ParentColors.dark,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                const Text(
+                  'Enter your current password, then choose a new one.',
+                  style: TextStyle(fontSize: 11, color: ParentColors.muted),
+                ),
+                const SizedBox(height: 14),
+                TextFormField(
+                  controller: _current,
+                  obscureText: !_showCurrent,
+                  decoration: _dec('Current password', _showCurrent,
+                          () => setState(() => _showCurrent = !_showCurrent)),
+                  validator: (v) => (v == null || v.isEmpty)
+                      ? 'Enter your current password'
+                      : null,
+                ),
+                const SizedBox(height: 10),
+                TextFormField(
+                  controller: _new,
+                  obscureText: !_showNew,
+                  decoration: _dec('New password', _showNew,
+                          () => setState(() => _showNew = !_showNew)),
+                  validator: (value) {
+                    final v = value ?? '';
+                    if (v.isEmpty) return 'Password is required';
+                    if (v.length < 8) return 'Minimum 8 characters required';
+                    if (!RegExp(r'[A-Z]').hasMatch(v)) {
+                      return 'Add at least one uppercase letter';
+                    }
+                    if (!RegExp(r'[0-9]').hasMatch(v)) {
+                      return 'Add at least one number';
+                    }
+                    if (v == _current.text) {
+                      return 'New password must be different';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 10),
+                TextFormField(
+                  controller: _confirm,
+                  obscureText: !_showNew,
+                  decoration: _dec('Confirm new password', _showNew,
+                          () => setState(() => _showNew = !_showNew)),
+                  validator: (v) =>
+                  v != _new.text ? 'Passwords do not match' : null,
+                ),
+                if (_error != null) ...[
+                  const SizedBox(height: 10),
+                  Text(
+                    _error!,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: ParentColors.danger,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  height: 46,
+                  child: ElevatedButton(
+                    onPressed: _busy ? null : _submit,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: ParentColors.primary,
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                    ),
+                    child: _busy
+                        ? const SizedBox(
+                      height: 20,
+                      width: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2.2,
+                        color: Colors.white,
+                      ),
+                    )
+                        : const Text(
+                      'Change password',
+                      style: TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );

@@ -91,6 +91,8 @@ class _ParentAttendanceScreenState extends State<ParentAttendanceScreen> {
                         const SizedBox(height: 12),
                         _summary(percent, present, late, absent, total),
                         const SizedBox(height: 16),
+                        // नवीन: या महिन्यातील रजेचे अर्ज
+                        ..._leaveSection(s),
                         if (days.isEmpty)
                           _empty()
                         else
@@ -305,6 +307,99 @@ class _ParentAttendanceScreenState extends State<ParentAttendanceScreen> {
         ],
       ),
     );
+  }
+
+  // ---------- leave applications of this month (नवीन) ----------
+  List<Widget> _leaveSection(AppState s) {
+    final start = DateTime(_month.year, _month.month, 1);
+    final end = DateTime(_month.year, _month.month + 1, 0);
+    final items = s.leaves.where((l) {
+      if (l.isDeclined) return false;
+      final f = DateTime(l.fromDate.year, l.fromDate.month, l.fromDate.day);
+      final t = DateTime(l.toDate.year, l.toDate.month, l.toDate.day);
+      return !f.isAfter(end) && !t.isBefore(start);
+    }).toList();
+    if (items.isEmpty) return const [];
+
+    return [
+      const Padding(
+        padding: EdgeInsets.only(bottom: 8),
+        child: Text(
+          'Leave this month',
+          style: TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.w900,
+            color: ParentColors.dark,
+          ),
+        ),
+      ),
+      for (final l in items)
+        Container(
+          margin: const EdgeInsets.only(bottom: 8),
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: ParentColors.border),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 34,
+                height: 34,
+                decoration: BoxDecoration(
+                  color: l.isApproved ? _presentBg : _lateBg,
+                  borderRadius: BorderRadius.circular(11),
+                ),
+                child: Icon(
+                  l.isApproved
+                      ? Icons.event_available_rounded
+                      : Icons.hourglass_top_rounded,
+                  size: 17,
+                  color: l.isApproved ? _presentFg : _lateFg,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '${AppState.shortDate(l.fromDate)}'
+                          '${l.days > 1 ? ' – ${AppState.shortDate(l.toDate)}' : ''}'
+                          ' · ${l.days} day${l.days == 1 ? '' : 's'}',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w800,
+                        color: ParentColors.dark,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      l.reason,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 10.5,
+                        color: ParentColors.muted,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Text(
+                l.isApproved ? 'Approved' : 'Pending',
+                style: TextStyle(
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.w800,
+                  color: l.isApproved ? _presentFg : _lateFg,
+                ),
+              ),
+            ],
+          ),
+        ),
+      const SizedBox(height: 8),
+    ];
   }
 
   // ---------- one day ----------

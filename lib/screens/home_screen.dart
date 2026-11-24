@@ -125,6 +125,11 @@ class _HomeScreenState extends State<HomeScreen> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             const SizedBox(height: 24),
+                            // नवीन: बाकी रजेचे अर्ज असतील तर banner
+                            if (s.pendingLeaveCount > 0) ...[
+                              _buildLeaveBanner(s),
+                              const SizedBox(height: 20),
+                            ],
                             _buildQuickAccess(s),
                             const SizedBox(height: 25),
                             _buildAttendance(s, now),
@@ -334,6 +339,80 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
           child: Center(child: child),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLeaveBanner(AppState s) {
+    final pending = s.leaves.where((l) => l.isPending).toList();
+    final n = pending.length;
+    final first = pending.first;
+    final extra = n > 1 ? ' + ${n - 1} more' : '';
+    return Material(
+      color: const Color(0xFFFFF6DD),
+      borderRadius: BorderRadius.circular(18),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(18),
+        onTap: () => _go(9),
+        child: Container(
+          padding: const EdgeInsets.all(13),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: const Color(0xFFF2D58A)),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 38,
+                height: 38,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF2B233).withValues(alpha: 0.25),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Icon(Icons.event_busy_rounded,
+                    size: 20, color: Color(0xFFB7791F)),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      n == 1
+                          ? '1 leave request needs your decision'
+                          : '$n leave requests need your decision',
+                      style: const TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w800,
+                        color: Color(0xFF7A5210),
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '${first.studentName}$extra',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: Color(0xFF9A6B1B),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Text(
+                'Review',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800,
+                  color: Color(0xFFB7791F),
+                ),
+              ),
+              const Icon(Icons.chevron_right_rounded,
+                  size: 18, color: Color(0xFFB7791F)),
+            ],
+          ),
         ),
       ),
     );

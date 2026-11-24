@@ -1,7 +1,10 @@
+import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show consolidateHttpClientResponseBytes;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:gal/gal.dart';
 
 import '../state/app_state.dart';
 import '../widgets/parent_widgets.dart';
@@ -1020,6 +1023,39 @@ class _PhotoViewer extends StatefulWidget {
 class _PhotoViewerState extends State<_PhotoViewer> {
   late final PageController _page;
   late int _index;
+  bool _saving = false;
+
+  /// नवीन: Photo फोनच्या gallery मध्ये save करतो ("Little Steps" album).
+  Future<void> _save(_Entry e) async {
+    if (_saving) return;
+    final url = e.item.photo.url;
+    if (url == null || url.isEmpty) {
+      showSnack(context, 'This photo cannot be saved.');
+      return;
+    }
+    setState(() => _saving = true);
+    final client = HttpClient();
+    try {
+      final req = await client.getUrl(Uri.parse(url));
+      final res = await req.close();
+      if (res.statusCode != 200) {
+        throw HttpException('HTTP ${res.statusCode}');
+      }
+      final bytes = await consolidateHttpClientResponseBytes(res);
+      await Gal.putImageBytes(bytes, album: 'Little Steps');
+      if (mounted) showSnack(context, 'Saved to gallery.');
+    } catch (_) {
+      // Gal.putImageBytes स्वतः gallery ची परवानगी मागतो; नाकारली तर किंवा
+      // network अडचण आली तर इथे येतो.
+      if (mounted) {
+        showSnack(context,
+            'Could not save. Allow photo access and check your internet.');
+      }
+    } finally {
+      client.close();
+      if (mounted) setState(() => _saving = false);
+    }
+  }
 
   @override
   void initState() {
@@ -1102,6 +1138,26 @@ class _PhotoViewerState extends State<_PhotoViewer> {
                     ),
                   ),
                   const Spacer(),
+                  // नवीन: Save to gallery
+                  _saving
+                      ? Container(
+                    width: 36,
+                    height: 36,
+                    padding: const EdgeInsets.all(9),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: .16),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white,
+                    ),
+                  )
+                      : _glassBtn(
+                    Icons.download_rounded,
+                        () => _save(entry),
+                  ),
+                  const SizedBox(width: 8),
                   ValueListenableBuilder<Set<String>>(
                     valueListenable: widget.favs,
                     builder: (context, favs, _) {
@@ -1255,4 +1311,5 @@ class _PhotoViewerState extends State<_PhotoViewer> {
       ),
     );
   }
+
 }

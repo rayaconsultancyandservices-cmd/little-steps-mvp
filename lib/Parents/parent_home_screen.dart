@@ -146,6 +146,8 @@ class _ParentHomeScreenState extends State<ParentHomeScreen>
           _quickActions(context, due != null, s.unreadMessages > 0),
           if (s.pendingAckCount > 0) _ackBanner(s.pendingAckCount),
           if (due != null) _feeBanner(due, today),
+          // नवीन: रजेच्या अर्जाची स्थिती
+          if (_latestLeave(s) != null) _leaveCard(context, _latestLeave(s)!),
           _photosCard(s, todayPhotos),
           _diaryCard(post),
           _eventsCard(context, upcoming),
@@ -231,7 +233,133 @@ class _ParentHomeScreenState extends State<ParentHomeScreen>
         key: 'fee_${due.id.isEmpty ? due.title : due.id}',
       ));
     }
+    // नवीन: रजेच्या अर्जाचा निर्णय (Teacher ने Approve / Decline केल्यावर).
+    for (final l in s.leaves.where((l) => !l.isPending).take(3)) {
+      final range = _leaveRange(l);
+      out.add(ParentNotifItem(
+        l.isApproved ? Icons.event_available_rounded : Icons.event_busy_rounded,
+        l.isApproved
+            ? 'Leave for $range was approved.'
+            : 'Leave for $range was declined.',
+        6,
+        key: 'leave_${l.id}_${l.status}',
+      ));
+    }
     return out;
+  }
+
+  // ---------------------------------------------------------------
+  // LEAVE HELPERS (नवीन)
+  // ---------------------------------------------------------------
+  String _leaveRange(LeaveRequest l) {
+    final a = AppState.shortDate(l.fromDate);
+    final b = AppState.shortDate(l.toDate);
+    return a == b ? a : '$a – $b';
+  }
+
+  /// Home वर दाखवायचा रजेचा अर्ज: pending किंवा (न वाचलेला) निर्णय झालेला,
+  /// ज्याची शेवटची तारीख अजून गेलेली नाही.
+  LeaveRequest? _latestLeave(AppState s) {
+    final n = DateTime.now();
+    final today = DateTime(n.year, n.month, n.day);
+    for (final l in s.leaves) {
+      final end = DateTime(l.toDate.year, l.toDate.month, l.toDate.day);
+      if (end.isBefore(today)) continue;
+      if (!l.isPending && _hiddenNotifs.contains('leave_${l.id}_${l.status}')) {
+        continue;
+      }
+      return l;
+    }
+    return null;
+  }
+
+  Widget _leaveCard(BuildContext context, LeaveRequest l) {
+    final Color fg;
+    final Color bg;
+    final String label;
+    final IconData icon;
+    if (l.isApproved) {
+      fg = const Color(0xFF22A06B);
+      bg = const Color(0xFFE3F6EC);
+      label = 'Approved';
+      icon = Icons.event_available_rounded;
+    } else if (l.isDeclined) {
+      fg = ParentColors.danger;
+      bg = const Color(0xFFFFE7E5);
+      label = 'Declined';
+      icon = Icons.event_busy_rounded;
+    } else {
+      fg = const Color(0xFFB7791F);
+      bg = const Color(0xFFFFF6DD);
+      label = 'Pending';
+      icon = Icons.hourglass_top_rounded;
+    }
+    return _Tap(
+      onTap: () => _push(context, const ParentLeaveScreen()),
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: _cardDecoration(),
+        child: Row(
+          children: [
+            Container(
+              width: 34,
+              height: 34,
+              decoration: BoxDecoration(
+                color: bg,
+                borderRadius: BorderRadius.circular(11),
+              ),
+              child: Icon(icon, size: 17, color: fg),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Leave · ${_leaveRange(l)} (${l.days} day${l.days == 1 ? '' : 's'})',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w800,
+                      color: ParentColors.dark,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    l.teacherNote.trim().isNotEmpty
+                        ? 'Teacher: ${l.teacherNote.trim()}'
+                        : l.reason,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 10.5,
+                      color: ParentColors.muted,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+              decoration: BoxDecoration(
+                color: bg,
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: Text(
+                label,
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w800,
+                  color: fg,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   String _greeting() {
@@ -783,7 +911,10 @@ class _ParentHomeScreenState extends State<ParentHomeScreen>
         // नवीन: रजेचा अर्ज
         const SizedBox(width: 8),
         item(Icons.event_busy_rounded, 'Leave',
-                () => _push(context, const ParentLeaveScreen())),
+                () => _push(context, const ParentLeaveScreen()),
+            dot: AppState.instance.leaves.any((l) =>
+            !l.isPending &&
+                !_hiddenNotifs.contains('leave_${l.id}_${l.status}'))),
       ],
     );
   }

@@ -7,7 +7,7 @@ import 'admin_widgets.dart';
 
 /// Reports & Export: Admin ला school चा खरा data (Firestore मधून) Excel / Google Sheets
 /// मध्ये घेण्यासाठी CSV स्वरूपात copy करता येतो. Preview सुद्धा screen वरच दिसतो.
-enum _Report { students, attendance, fees, receipts, teachers }
+enum _Report { students, attendance, fees, receipts, teachers, leaves }
 
 class _Sheet {
   const _Sheet(this.headers, this.rows, this.summary);
@@ -36,10 +36,13 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
     _Report.fees: 'Fees',
     _Report.receipts: 'Receipts',
     _Report.teachers: 'Teachers',
+    _Report.leaves: 'Leave requests',
   };
 
   bool get _usesDates =>
-      _report == _Report.attendance || _report == _Report.receipts;
+      _report == _Report.attendance ||
+          _report == _Report.receipts ||
+          _report == _Report.leaves;
 
   Future<void> _pickRange() async {
     final now = DateTime.now();
@@ -75,6 +78,8 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
         return _receipts(s);
       case _Report.teachers:
         return _teachers(s);
+      case _Report.leaves:
+        return _leaves(s);
     }
   }
 
@@ -217,6 +222,63 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
       [
         MapEntry('Receipts', '${list.length}'),
         MapEntry('Total collected', fmtMoney(total)),
+      ],
+    );
+  }
+
+  // नवीन: Parents चे रजेचे अर्ज (तारखेच्या range शी overlap होणारे).
+  _Sheet _leaves(AdminState s) {
+    bool overlaps(AdminLeave l) {
+      if (_range == null) return true;
+      final f = l.fromDate ?? l.toDate;
+      final t = l.toDate ?? l.fromDate;
+      if (f == null || t == null) return false;
+      final from = DateTime(f.year, f.month, f.day);
+      final to = DateTime(t.year, t.month, t.day);
+      final rs = DateTime(_range!.start.year, _range!.start.month, _range!.start.day);
+      final re = DateTime(_range!.end.year, _range!.end.month, _range!.end.day);
+      return !from.isAfter(re) && !to.isBefore(rs);
+    }
+
+    final list = s.leaves
+        .where((l) =>
+    (_classFilter == null || l.classId == _classFilter) && overlaps(l))
+        .toList()
+      ..sort((a, b) => (b.createdAt ?? DateTime(2000))
+          .compareTo(a.createdAt ?? DateTime(2000)));
+    int daysOf(AdminLeave l) => (l.fromDate == null || l.toDate == null)
+        ? 0
+        : l.toDate!.difference(l.fromDate!).inDays + 1;
+    String statusOf(String v) =>
+        v == 'approved' ? 'Approved' : v == 'declined' ? 'Declined' : 'Pending';
+    final approved = list.where((l) => l.status == 'approved').length;
+    final declined = list.where((l) => l.status == 'declined').length;
+    final pending = list.length - approved - declined;
+    return _Sheet(
+      const [
+        'From', 'To', 'Days', 'Class', 'Student', 'Parent', 'Reason',
+        'Status', 'Teacher note', 'Applied on',
+      ],
+      [
+        for (final l in list)
+          [
+            fmtDate(l.fromDate),
+            fmtDate(l.toDate),
+            '${daysOf(l)}',
+            s.classNameOf(l.classId),
+            l.studentName,
+            l.parentName,
+            l.reason,
+            statusOf(l.status),
+            l.teacherNote,
+            fmtDate(l.createdAt),
+          ],
+      ],
+      [
+        MapEntry('Applications', '${list.length}'),
+        MapEntry('Approved', '$approved'),
+        MapEntry('Declined', '$declined'),
+        MapEntry('Pending', '$pending'),
       ],
     );
   }

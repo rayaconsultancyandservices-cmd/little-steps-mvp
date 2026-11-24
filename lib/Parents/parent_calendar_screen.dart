@@ -70,6 +70,70 @@ class _ParentCalendarScreenState extends State<ParentCalendarScreen> {
   List<SchoolEvent> _on(List<SchoolEvent> all, DateTime d) =>
       all.where((e) => _same(e.date, d)).toList();
 
+  // नवीन: मंजूर (approved) रजेचा दिवस?
+  bool _onLeave(DateTime d) {
+    final day = DateTime(d.year, d.month, d.day);
+    for (final l in AppState.instance.leaves) {
+      if (!l.isApproved) continue;
+      final f = DateTime(l.fromDate.year, l.fromDate.month, l.fromDate.day);
+      final t = DateTime(l.toDate.year, l.toDate.month, l.toDate.day);
+      if (!day.isBefore(f) && !day.isAfter(t)) return true;
+    }
+    return false;
+  }
+
+  bool get _hasApprovedLeave =>
+      AppState.instance.leaves.any((l) => l.isApproved);
+
+  Widget _leaveDayTile() {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFE3F6EC),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFBFE6D0)),
+      ),
+      child: const Row(
+        children: [
+          Icon(Icons.event_available_rounded,
+              size: 18, color: Color(0xFF22A06B)),
+          SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Approved leave — your child is on leave this day',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w800,
+                color: Color(0xFF1B7A52),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _leaveLegend() {
+    return const Padding(
+      padding: EdgeInsets.only(top: 8, left: 2),
+      child: Row(
+        children: [
+          Icon(Icons.circle, size: 9, color: Color(0xFF22A06B)),
+          SizedBox(width: 6),
+          Text(
+            'Approved leave',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: ParentColors.muted,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   int _daysFromToday(DateTime d) =>
       DateTime(d.year, d.month, d.day).difference(_today).inDays;
 
@@ -120,8 +184,11 @@ class _ParentCalendarScreenState extends State<ParentCalendarScreen> {
                       _calendarCard(all),
                       const SizedBox(height: 12),
                       _filterChips(),
+                      if (_hasApprovedLeave) _leaveLegend(),
                       const SizedBox(height: 16),
                       _listHeader(listTitle, listEvents.length),
+                      if (_selected != null && _onLeave(_selected!))
+                        _leaveDayTile(),
                       if (listEvents.isEmpty)
                         _empty(_selected != null
                             ? 'No events on this day'
@@ -377,9 +444,14 @@ class _ParentCalendarScreenState extends State<ParentCalendarScreen> {
     final isToday = _same(date, _today);
     final isSelected = _selected != null && _same(date, _selected!);
     final cat = events.isEmpty ? null : events.first.category;
+    final onLeave = _onLeave(date);
 
     Color bg = Colors.transparent;
     Color fg = ParentColors.dark;
+    if (onLeave) {
+      bg = const Color(0xFFE3F6EC);
+      fg = const Color(0xFF22A06B);
+    }
     if (cat != null) {
       bg = kCategoryBg[cat] ?? AppColors.blueLight;
       fg = kCategoryFg[cat] ?? ParentColors.primary;
@@ -409,10 +481,21 @@ class _ParentCalendarScreenState extends State<ParentCalendarScreen> {
                 style: TextStyle(
                     fontSize: 12.5,
                     height: 1.1,
-                    fontWeight: (isToday || cat != null)
+                    fontWeight: (isToday || cat != null || onLeave)
                         ? FontWeight.w900
                         : FontWeight.w600,
                     color: fg)),
+            if (events.isEmpty && onLeave) ...[
+              const SizedBox(height: 3),
+              Container(
+                width: 4,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: isToday ? Colors.white : const Color(0xFF22A06B),
+                  shape: BoxShape.circle,
+                ),
+              ),
+            ],
             if (events.isNotEmpty) ...[
               const SizedBox(height: 3),
               Row(

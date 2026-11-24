@@ -287,7 +287,8 @@ class _MessagesScreenState extends State<MessagesScreen> {
                       SizedBox(height: 4),
                       Text(
                         'Parents see your reply hours (12:00 – 3:00 PM). '
-                            'Turn off chat notifications after hours in Settings.',
+                            'Messages sent outside these hours will be answered '
+                            'in the next reply window.',
                         style: TextStyle(
                           fontSize: 10,
                           color: Color(0xFF2B6CB0),

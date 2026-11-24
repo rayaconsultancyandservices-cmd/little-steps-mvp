@@ -17,7 +17,7 @@ class ParentNotifItem {
   final String key;
 
   /// Bottom tab to open when tapped:
-  /// 0 Home, 1 Photos, 2 Diary, 3 Circulars, 4 Fees, 5 Messages
+  /// 0 Home, 1 Photos, 2 Diary, 3 Circulars, 4 Fees, 5 Messages, 6 Leave
   final int tab;
 }
 
@@ -96,6 +96,8 @@ const Map<int, _Kind> _kinds = {
   3: _Kind('Circulars', Color(0xFF3F7FC4), Color(0xFFE3F1FF)),
   4: _Kind('Fees', Color(0xFFD9822B), Color(0xFFFFF0D9)),
   5: _Kind('Messages', Color(0xFF7B5CD6), Color(0xFFEFE8FF)),
+  // नवीन: रजेच्या अर्जाचा निर्णय (Approved / Declined)
+  6: _Kind('Leave', Color(0xFF22A06B), Color(0xFFE3F6EC)),
 };
 
 const _Kind _defaultKind =
