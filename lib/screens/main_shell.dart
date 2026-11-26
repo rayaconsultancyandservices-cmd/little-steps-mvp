@@ -12,6 +12,7 @@ import 'teacher_profile_screen.dart';
 import 'fees_screen.dart';
 import 'events_screen.dart';
 import 'leave_screen.dart';
+import 'my_students_screen.dart';
 
 class MainShell extends StatefulWidget {
   const MainShell({super.key});
@@ -32,11 +33,12 @@ class _MainShellState extends State<MainShell> {
   // 7 Fees       (Home वरून उघडतो) - नवीन
   // 8 Events     (Home वरून उघडतो) - नवीन
   // 9 Leave      (Home वरून उघडतो) - नवीन
+  // 10 My Students (Home वरून उघडतो) - नवीन; मुलावर टॅप = Student Profile
 
   int _selectedIndex = 0;
 
   void _goToTab(int index) {
-    if (index < 0 || index > 9) return;
+    if (index < 0 || index > 10) return;
 
     setState(() {
       _selectedIndex = index;
@@ -67,6 +69,10 @@ class _MainShellState extends State<MainShell> {
       _selectedIndex == 9
           ? TeacherLeaveScreen(onBack: _goHome)
           : const SizedBox.shrink(),
+      // नवीन: My Students — फक्त उघडल्यावर तयार होतो.
+      _selectedIndex == 10
+          ? MyStudentsScreen(onBack: _goHome)
+          : const SizedBox.shrink(),
     ];
 
     return Scaffold(
@@ -85,8 +91,13 @@ class _MainShellState extends State<MainShell> {
   }
 
   Widget _buildBottomNavigation() {
-    // Messages आणि My Profile Home वरून उघडतात, म्हणून Home highlighted राहतो.
-    final activeIndex = _selectedIndex > 4 ? 0 : _selectedIndex;
+    // Bottom bar चे 5 tabs आणि ते उघडणारे page index:
+    //   Home=0, Attendance=1, Photos=2, Diary=3, Profile=6
+    // Circulars / Messages / Fees / Events / Leave / My Students Home वरून उघडतात,
+    // म्हणून त्यावेळी Home highlighted राहतो.
+    const tabPages = [0, 1, 2, 3, 6];
+    final activeIndex =
+    tabPages.contains(_selectedIndex) ? tabPages.indexOf(_selectedIndex) : 0;
 
     const items = [
       _NavItem(
@@ -110,9 +121,9 @@ class _MainShellState extends State<MainShell> {
         selectedIcon: Icons.menu_book_rounded,
       ),
       _NavItem(
-        label: 'Circulars',
-        icon: Icons.description_outlined,
-        selectedIcon: Icons.description_rounded,
+        label: 'Profile',
+        icon: Icons.account_circle_outlined,
+        selectedIcon: Icons.account_circle_rounded,
       ),
     ];
 
@@ -145,7 +156,7 @@ class _MainShellState extends State<MainShell> {
               child: _buildNavItem(
                 item: item,
                 selected: selected,
-                onTap: () => _goToTab(index),
+                onTap: () => _goToTab(tabPages[index]),
               ),
             );
           }),
@@ -220,6 +231,7 @@ class _MainShellState extends State<MainShell> {
       ),
     );
   }
+
 }
 
 class _NavItem {

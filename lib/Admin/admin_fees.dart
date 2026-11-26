@@ -1,10 +1,83 @@
+import 'dart:async';
+
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../state/app_state.dart';
 import 'admin_state.dart';
 import 'admin_widgets.dart';
 
 /// Fees: fee जोडा (एका मुलाला / पूर्ण class ला), paid mark करा – Parent app ला लगेच दिसतं.
+///
+/// NEW (Payment requests):
+///  - Parent ने UPI ने भरून पाठवलेल्या सर्व classes च्या requests (UTR सह) नवीन "Requests" tab मध्ये
+///  - Verify -> fee paid + receipt (feeId + UTR सहित) + request verified (एकाच batch मध्ये)
+///  - Reject -> कारण (पर्यायी) Parent ला दिसतं
+///  - वर "To verify" card; "Mark paid" केल्यावर त्या fee ची submitted request आपोआप verified
+///  - Admin च्या receipts मध्ये आता feeId जातो (आधी नव्हता, म्हणून Parent/Teacher ला जुळत नव्हता)
+///  - NEW: paid fee साठी "Mark unpaid" (receipt सुद्धा काढतो); fee delete केल्यावर तिचे receipts सुद्धा जातात
+/// 3:07 PM
+String _time(DateTime d) {
+  final h = d.hour % 12 == 0 ? 12 : d.hour % 12;
+  final m = d.minute.toString().padLeft(2, '0');
+  return '$h:$m ${d.hour >= 12 ? 'PM' : 'AM'}';
+}
+
+/// Parent ची payment request  (students/{studentId}/payments/{id})
+class _AdminClaim {
+  const _AdminClaim({
+    required this.id,
+    required this.studentId,
+    required this.classId,
+    required this.feeId,
+    required this.title,
+    required this.amount,
+    required this.utr,
+    required this.status,
+    required this.createdAt,
+    this.note = '',
+    this.reviewedBy = '',
+  });
+
+  final String id;
+  final String studentId;
+  final String classId;
+  final String feeId;
+  final String title;
+  final int amount;
+  final String utr;
+
+  /// submitted | verified | rejected
+  final String status;
+  final DateTime createdAt;
+  final String note;
+  final String reviewedBy;
+
+  bool get isSubmitted => status == 'submitted';
+
+  factory _AdminClaim.fromDoc(QueryDocumentSnapshot<Map<String, dynamic>> d) {
+    final x = d.data();
+    final ts = x['createdAt'];
+    final amt = x['amount'];
+    return _AdminClaim(
+      id: d.id,
+      // path: students/{studentId}/payments/{id}
+      studentId: d.reference.parent.parent?.id ?? '',
+      classId: (x['classId'] ?? '').toString(),
+      feeId: (x['feeId'] ?? '').toString(),
+      title: (x['title'] ?? '').toString(),
+      amount: amt is num ? amt.toInt() : 0,
+      utr: (x['utr'] ?? '').toString(),
+      status: (x['status'] ?? 'submitted').toString(),
+      createdAt: ts is Timestamp ? ts.toDate() : DateTime.now(),
+      note: (x['note'] ?? '').toString(),
+      reviewedBy: (x['reviewedBy'] ?? '').toString(),
+    );
+  }
+}
+
 class AdminFeesScreen extends StatefulWidget {
   const AdminFeesScreen({super.key});
 
@@ -21,11 +94,50 @@ class _AdminFeesScreenState extends State<AdminFeesScreen> {
   int _tab = 0; // 0 fees, 1 receipts
   String? _classFilter;
 
+  // Payment requests (सर्व classes) - collectionGroup('payments')
+  int _reqFilter = 0; // 0 waiting, 1 verified, 2 rejected, 3 all
+  List<_AdminClaim> _claims = [];
+  String? _claimsError;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _claimsSub;
+
+  @override
+  void initState() {
+    super.initState();
+    _claimsSub = FirebaseFirestore.instance
+        .collectionGroup('payments')
+        .snapshots()
+        .listen(
+          (snap) {
+        if (!mounted) return;
+        setState(() {
+          _claims = [for (final d in snap.docs) _AdminClaim.fromDoc(d)]
+            ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+          _claimsError = null;
+        });
+      },
+      onError: (Object e) {
+        if (!mounted) return;
+        setState(() => _claimsError =
+        'Payment requests could not be loaded. '
+            'Please publish the latest Firestore rules.');
+      },
+    );
+  }
+
   @override
   void dispose() {
+    _claimsSub?.cancel();
     _search.dispose();
     super.dispose();
   }
+
+  String get _reviewer => FirebaseAuth.instance.currentUser?.email ?? 'Admin';
+
+  /// या fee साठी Parent ची "submitted" requests.
+  List<_AdminClaim> _waitingFor(AdminFee f) => [
+    for (final c in _claims)
+      if (c.isSubmitted && c.studentId == f.studentId && c.feeId == f.id) c,
+  ];
 
   Future<void> _addFee() async {
     final s = AdminState.instance;
@@ -262,7 +374,8 @@ class _AdminFeesScreenState extends State<AdminFeesScreen> {
   }
 
   Future<void> _markPaid(AdminFee f) async {
-    String mode = _modes.first;
+    final waiting = _waitingFor(f);
+    String mode = waiting.isNotEmpty ? 'UPI' : _modes.first;
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => StatefulBuilder(
@@ -311,7 +424,26 @@ class _AdminFeesScreenState extends State<AdminFeesScreen> {
     );
     if (ok != true) return;
     try {
-      await AdminState.instance.markFeePaid(f, mode);
+      final db = FirebaseFirestore.instance;
+      final sRef = db.collection('students').doc(f.studentId);
+      final batch = db.batch();
+      batch.update(sRef.collection('fees').doc(f.id), {'status': 'paid'});
+      batch.set(sRef.collection('receipts').doc(), {
+        'title': f.title,
+        'amount': f.amount,
+        'date': Timestamp.now(),
+        'mode': mode,
+        'feeId': f.id,
+      });
+      // या fee ची Parent ची submitted request असेल तर तीही verified.
+      for (final c in waiting) {
+        batch.update(sRef.collection('payments').doc(c.id), {
+          'status': 'verified',
+          'reviewedAt': Timestamp.now(),
+          'reviewedBy': _reviewer,
+        });
+      }
+      await batch.commit();
       if (mounted) adminSnack(context, 'Marked as paid · receipt created');
     } catch (e) {
       if (mounted) adminSnack(context, AdminState.errorText(e), error: true);
@@ -323,11 +455,175 @@ class _AdminFeesScreenState extends State<AdminFeesScreen> {
       context,
       title: 'Delete this fee?',
       message: '${f.title} (${fmtMoney(f.amount)}) will be removed for '
-          '${AdminState.instance.studentName(f.studentId)}.',
+          '${AdminState.instance.studentName(f.studentId)}'
+          '${f.status == FeeStatus.paid ? ', along with its receipt' : ''}.',
     );
     if (!ok) return;
     try {
-      await AdminState.instance.deleteFee(f);
+      final sRef =
+      FirebaseFirestore.instance.collection('students').doc(f.studentId);
+      final rec =
+      await sRef.collection('receipts').where('feeId', isEqualTo: f.id).get();
+      final batch = FirebaseFirestore.instance.batch();
+      for (final d in rec.docs) {
+        batch.delete(d.reference);
+      }
+      batch.delete(sRef.collection('fees').doc(f.id));
+      await batch.commit();
+    } catch (e) {
+      if (mounted) adminSnack(context, AdminState.errorText(e), error: true);
+    }
+  }
+
+  Future<void> _markUnpaid(AdminFee f) async {
+    final ok = await adminConfirm(
+      context,
+      title: 'Mark as unpaid?',
+      message: '${f.title} (${fmtMoney(f.amount)}) will go back to pending and '
+          'its receipt will be removed for '
+          '${AdminState.instance.studentName(f.studentId)}.',
+      confirmText: 'Mark unpaid',
+      danger: false,
+    );
+    if (!ok || !mounted) return;
+    try {
+      final sRef =
+      FirebaseFirestore.instance.collection('students').doc(f.studentId);
+      final rec =
+      await sRef.collection('receipts').where('feeId', isEqualTo: f.id).get();
+      final batch = FirebaseFirestore.instance.batch();
+      for (final d in rec.docs) {
+        batch.delete(d.reference);
+      }
+      batch.update(sRef.collection('fees').doc(f.id), {'status': 'due'});
+      await batch.commit();
+      if (mounted) adminSnack(context, 'Marked as unpaid · receipt removed');
+    } catch (e) {
+      if (mounted) adminSnack(context, AdminState.errorText(e), error: true);
+    }
+  }
+
+  /// Parent ची payment request verify: fee paid + receipt (UTR सह) + request verified.
+  Future<void> _verifyClaim(_AdminClaim c) async {
+    final matches = AdminState.instance.fees
+        .where((f) => c.feeId.isNotEmpty && f.id == c.feeId && f.studentId == c.studentId);
+    if (matches.isEmpty) {
+      adminSnack(
+        context,
+        'The fee for this request no longer exists. You can reject the request.',
+        error: true,
+      );
+      return;
+    }
+    final fee = matches.first;
+    final already = fee.status == FeeStatus.paid;
+    final differs = fee.amount != c.amount;
+
+    final ok = await adminConfirm(
+      context,
+      title: 'Verify payment?',
+      confirmText: 'Verify',
+      danger: false,
+      message: '${AdminState.instance.studentName(c.studentId)} · ${fee.title}\n'
+          'Amount: ${fmtMoney(fee.amount)}   UTR: ${c.utr}\n\n'
+          '${already ? 'This fee is already marked paid. The request will just be marked verified.' : 'The fee will be marked paid and a receipt (mode UPI) will be created for the parent.'}'
+          '${differs ? '\n\nNote: the parent paid ${fmtMoney(c.amount)}, but the fee is now ${fmtMoney(fee.amount)}. Check your bank before verifying.' : ''}'
+          '\n\nVerify only after you see this UTR in your bank / UPI app.',
+    );
+    if (!ok || !mounted) return;
+
+    try {
+      final db = FirebaseFirestore.instance;
+      final sRef = db.collection('students').doc(c.studentId);
+      final batch = db.batch();
+      if (!already) {
+        batch.update(sRef.collection('fees').doc(fee.id), {'status': 'paid'});
+        batch.set(sRef.collection('receipts').doc(), {
+          'title': fee.title,
+          'amount': fee.amount,
+          'date': Timestamp.now(),
+          'mode': 'UPI',
+          'feeId': fee.id,
+          'utr': c.utr,
+        });
+      }
+      batch.update(sRef.collection('payments').doc(c.id), {
+        'status': 'verified',
+        'reviewedAt': Timestamp.now(),
+        'reviewedBy': _reviewer,
+      });
+      await batch.commit();
+      if (mounted) {
+        adminSnack(
+          context,
+          already
+              ? 'Request marked as verified'
+              : 'Payment verified · fee marked paid · receipt created',
+        );
+      }
+    } catch (e) {
+      if (mounted) adminSnack(context, AdminState.errorText(e), error: true);
+    }
+  }
+
+  /// Parent ची payment request reject (कारण पर्यायी, Parent ला दिसतं).
+  Future<void> _rejectClaim(_AdminClaim c) async {
+    final note = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: Colors.white,
+        surfaceTintColor: Colors.transparent,
+        title: const Text('Reject payment request?'),
+        content: SizedBox(
+          width: 400,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '${AdminState.instance.studentName(c.studentId)} · '
+                    '${c.title.isEmpty ? 'Fee payment' : c.title} · ${fmtMoney(c.amount)}\n'
+                    'UTR: ${c.utr}',
+                style: const TextStyle(fontWeight: FontWeight.w700, height: 1.5),
+              ),
+              const SizedBox(height: 14),
+              dialogField(
+                note,
+                'Reason for parent (optional)',
+                hint: 'e.g. UTR not found in bank',
+                maxLines: 2,
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: adminDangerButton(),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Reject'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    try {
+      await FirebaseFirestore.instance
+          .collection('students')
+          .doc(c.studentId)
+          .collection('payments')
+          .doc(c.id)
+          .update({
+        'status': 'rejected',
+        'note': note.text.trim(),
+        'reviewedAt': Timestamp.now(),
+        'reviewedBy': _reviewer,
+      });
+      if (mounted) adminSnack(context, 'Request rejected · the parent can see your note');
     } catch (e) {
       if (mounted) adminSnack(context, AdminState.errorText(e), error: true);
     }
@@ -364,13 +660,26 @@ class _AdminFeesScreenState extends State<AdminFeesScreen> {
               .contains(_q);
         }).toList();
 
+        final waitingCount = _claims.where((c) => c.isSubmitted).length;
+        final claimList = _claims.where((c) {
+          final cls = s.studentById(c.studentId)?.classId ?? c.classId;
+          if (_classFilter != null && cls != _classFilter) return false;
+          if (_reqFilter == 0 && c.status != 'submitted') return false;
+          if (_reqFilter == 1 && c.status != 'verified') return false;
+          if (_reqFilter == 2 && c.status != 'rejected') return false;
+          if (_q.isEmpty) return true;
+          return '${s.studentName(c.studentId)} ${c.title} ${c.utr}'
+              .toLowerCase()
+              .contains(_q);
+        }).toList();
+
         return AdminPage(
           title: 'Fees',
           subtitle: 'Fees added here appear instantly in the Parent app',
           actions: [
             AdminSearchField(
               controller: _search,
-              hint: 'Search student or fee…',
+              hint: 'Search student, fee or UTR…',
               onChanged: (v) => setState(() => _q = v.trim().toLowerCase()),
             ),
             AdminDropdown<String?>(
@@ -395,11 +704,13 @@ class _AdminFeesScreenState extends State<AdminFeesScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              ErrorBanner(s.lastError),
+              ErrorBanner(s.lastError ?? _claimsError),
               LayoutBuilder(
                 builder: (context, constraints) {
                   final width = constraints.maxWidth;
-                  final cardWidth = width >= 1100
+                  final cardWidth = width >= 1400
+                      ? (width - 64) / 5
+                      : width >= 1100
                       ? (width - 48) / 4
                       : width >= 650
                       ? (width - 16) / 2
@@ -459,6 +770,18 @@ class _AdminFeesScreenState extends State<AdminFeesScreen> {
                           onTap: () => setState(() { _tab = 0; _statusFilter = 3; }),
                         ),
                       ),
+                      SizedBox(
+                        width: cardWidth,
+                        child: _FeeMetricCard(
+                          icon: Icons.fact_check_rounded,
+                          label: 'To verify',
+                          value: '$waitingCount',
+                          note: 'Parent payment requests',
+                          color: AdminColors.purple,
+                          selected: _tab == 2,
+                          onTap: () => setState(() { _tab = 2; _reqFilter = 0; }),
+                        ),
+                      ),
                     ],
                   );
                 },
@@ -466,15 +789,113 @@ class _AdminFeesScreenState extends State<AdminFeesScreen> {
               const SizedBox(height: 18),
               SegmentedButton<int>(
                 showSelectedIcon: false,
-                segments: const [
-                  ButtonSegment(value: 0, label: Text('Fees')),
-                  ButtonSegment(value: 1, label: Text('Receipts')),
+                segments: [
+                  const ButtonSegment(value: 0, label: Text('Fees')),
+                  const ButtonSegment(value: 1, label: Text('Receipts')),
+                  ButtonSegment(
+                    value: 2,
+                    label: Text(waitingCount > 0
+                        ? 'Requests ($waitingCount)'
+                        : 'Requests'),
+                  ),
                 ],
                 selected: {_tab},
                 onSelectionChanged: (v) => setState(() => _tab = v.first),
               ),
               const SizedBox(height: 12),
-              if (_tab == 1)
+              if (_tab == 2) ...[
+                SegmentedButton<int>(
+                  showSelectedIcon: false,
+                  segments: [
+                    ButtonSegment(
+                      value: 0,
+                      label: Text(waitingCount > 0
+                          ? 'Waiting ($waitingCount)'
+                          : 'Waiting'),
+                    ),
+                    const ButtonSegment(value: 1, label: Text('Verified')),
+                    const ButtonSegment(value: 2, label: Text('Rejected')),
+                    const ButtonSegment(value: 3, label: Text('All')),
+                  ],
+                  selected: {_reqFilter},
+                  onSelectionChanged: (v) => setState(() => _reqFilter = v.first),
+                ),
+                const SizedBox(height: 16),
+                AdminCard(
+                  title: 'Payment requests (${claimList.length})',
+                  child: AdminTable(
+                    emptyText: _reqFilter == 0
+                        ? 'No payment requests are waiting for verification.'
+                        : 'No payment requests here.',
+                    columns: const [
+                      'Sent',
+                      'Student',
+                      'Class',
+                      'Fee',
+                      'Amount',
+                      'UTR',
+                      'Status',
+                      'Note',
+                      '',
+                    ],
+                    rows: [
+                      for (final c in claimList)
+                        DataRow(cells: [
+                          cellText('${fmtDate(c.createdAt)}, ${_time(c.createdAt)}'),
+                          cellText(s.studentName(c.studentId), bold: true),
+                          cellText(s.studentById(c.studentId)?.className ?? ''),
+                          cellText(c.title),
+                          cellText(fmtMoney(c.amount), bold: true),
+                          DataCell(Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(c.utr,
+                                  style: const TextStyle(
+                                      fontSize: 12, fontWeight: FontWeight.w700)),
+                              IconButton(
+                                tooltip: 'Copy UTR',
+                                visualDensity: VisualDensity.compact,
+                                icon: const Icon(Icons.copy_rounded, size: 16),
+                                onPressed: () async {
+                                  await Clipboard.setData(
+                                      ClipboardData(text: c.utr));
+                                  if (mounted) adminSnack(context, 'UTR copied');
+                                },
+                              ),
+                            ],
+                          )),
+                          DataCell(c.isSubmitted
+                              ? const StatusChip('Waiting', AdminColors.orange)
+                              : c.status == 'verified'
+                              ? const StatusChip('Verified', AdminColors.green)
+                              : const StatusChip('Rejected', AdminColors.red)),
+                          cellText(c.note.isNotEmpty
+                              ? c.note
+                              : (c.reviewedBy.isNotEmpty
+                              ? 'by ${c.reviewedBy}'
+                              : '')),
+                          DataCell(c.isSubmitted
+                              ? Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              TextButton(
+                                onPressed: () => _verifyClaim(c),
+                                child: const Text('Verify'),
+                              ),
+                              TextButton(
+                                onPressed: () => _rejectClaim(c),
+                                style: TextButton.styleFrom(
+                                    foregroundColor: AdminColors.red),
+                                child: const Text('Reject'),
+                              ),
+                            ],
+                          )
+                              : const SizedBox.shrink()),
+                        ]),
+                    ],
+                  ),
+                ),
+              ] else if (_tab == 1)
                 AdminCard(
                   title: 'Receipts (${receiptList.length}) · '
                       '${fmtMoney(receiptList.fold<int>(0, (n, r) => n + r.amount))}',
@@ -502,66 +923,88 @@ class _AdminFeesScreenState extends State<AdminFeesScreen> {
                   ),
                 )
               else ...[
-                SegmentedButton<int>(
-                  showSelectedIcon: false,
-                  segments: const [
-                    ButtonSegment(value: 0, label: Text('All')),
-                    ButtonSegment(value: 1, label: Text('Due')),
-                    ButtonSegment(value: 2, label: Text('Paid')),
-                    ButtonSegment(value: 3, label: Text('Upcoming')),
-                  ],
-                  selected: {_statusFilter},
-                  onSelectionChanged: (v) => setState(() => _statusFilter = v.first),
-                ),
-                const SizedBox(height: 16),
-                AdminCard(
-                  child: AdminTable(
-                    emptyText: 'No fees yet. Use "Add fee" to create one.',
-                    columns: const [
-                      'Student',
-                      'Class',
-                      'Fee',
-                      'Amount',
-                      'Due date',
-                      'Status',
-                      '',
+                  SegmentedButton<int>(
+                    showSelectedIcon: false,
+                    segments: const [
+                      ButtonSegment(value: 0, label: Text('All')),
+                      ButtonSegment(value: 1, label: Text('Due')),
+                      ButtonSegment(value: 2, label: Text('Paid')),
+                      ButtonSegment(value: 3, label: Text('Upcoming')),
                     ],
-                    rows: [
-                      for (final f in list)
-                        DataRow(cells: [
-                          cellText(s.studentName(f.studentId), bold: true),
-                          cellText(s.studentById(f.studentId)?.className ?? ''),
-                          cellText(f.title),
-                          cellText(fmtMoney(f.amount), bold: true),
-                          cellText(fmtDate(f.dueDate)),
-                          DataCell(_status(f.status)),
-                          DataCell(Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              if (f.status != FeeStatus.paid) ...[
-                                TextButton(
-                                  onPressed: () => _markPaid(f),
-                                  child: const Text('Mark paid'),
-                                ),
+                    selected: {_statusFilter},
+                    onSelectionChanged: (v) => setState(() => _statusFilter = v.first),
+                  ),
+                  const SizedBox(height: 16),
+                  AdminCard(
+                    child: AdminTable(
+                      emptyText: 'No fees yet. Use "Add fee" to create one.',
+                      columns: const [
+                        'Student',
+                        'Class',
+                        'Fee',
+                        'Amount',
+                        'Due date',
+                        'Status',
+                        '',
+                      ],
+                      rows: [
+                        for (final f in list)
+                          DataRow(cells: [
+                            cellText(s.studentName(f.studentId), bold: true),
+                            cellText(s.studentById(f.studentId)?.className ?? ''),
+                            cellText(f.title),
+                            cellText(fmtMoney(f.amount), bold: true),
+                            cellText(fmtDate(f.dueDate)),
+                            DataCell(Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                _status(f.status),
+                                if (f.status != FeeStatus.paid &&
+                                    _waitingFor(f).isNotEmpty) ...[
+                                  const SizedBox(width: 8),
+                                  const Text(
+                                    'UTR sent',
+                                    style: TextStyle(
+                                      fontSize: 10.5,
+                                      fontWeight: FontWeight.w800,
+                                      color: AdminColors.orange,
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            )),
+                            DataCell(Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                if (f.status != FeeStatus.paid) ...[
+                                  TextButton(
+                                    onPressed: () => _markPaid(f),
+                                    child: const Text('Mark paid'),
+                                  ),
+                                  IconButton(
+                                    tooltip: 'Edit',
+                                    icon: const Icon(Icons.edit_outlined, size: 19),
+                                    onPressed: () => _editFee(f),
+                                  ),
+                                ] else ...[
+                                  TextButton(
+                                    onPressed: () => _markUnpaid(f),
+                                    child: const Text('Mark unpaid'),
+                                  ),
+                                ],
                                 IconButton(
-                                  tooltip: 'Edit',
-                                  icon: const Icon(Icons.edit_outlined, size: 19),
-                                  onPressed: () => _editFee(f),
+                                  tooltip: 'Delete',
+                                  icon: const Icon(Icons.delete_outline_rounded,
+                                      size: 19, color: AdminColors.red),
+                                  onPressed: () => _delete(f),
                                 ),
                               ],
-                              IconButton(
-                                tooltip: 'Delete',
-                                icon: const Icon(Icons.delete_outline_rounded,
-                                    size: 19, color: AdminColors.red),
-                                onPressed: () => _delete(f),
-                              ),
-                            ],
-                          )),
-                        ]),
-                    ],
+                            )),
+                          ]),
+                      ],
+                    ),
                   ),
-                ),
-              ],
+                ],
             ],
           ),
         );

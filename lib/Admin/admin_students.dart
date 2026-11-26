@@ -1,5 +1,9 @@
+import 'dart:convert';
+
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:image_picker/image_picker.dart';
 
 import '../state/app_state.dart';
 import 'admin_state.dart';
@@ -291,6 +295,413 @@ class _AdminStudentsScreenState extends State<AdminStudentsScreen> {
     }
   }
 
+  // ------------------------------------------------------------------
+  // BULK IMPORT (CSV)
+  // ------------------------------------------------------------------
+  static const List<String> _importBloods = [
+    'A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-'
+  ];
+
+  /// Excel मधून save केलेली CSV (comma किंवा semicolon, quotes, BOM) वाचतो.
+  List<List<String>> _parseCsv(String text) {
+    var t = text;
+    if (t.startsWith('\uFEFF')) t = t.substring(1);
+    final firstLine = t.split('\n').first;
+    final sep =
+    (!firstLine.contains(',') && firstLine.contains(';')) ? ';' : ',';
+    final rows = <List<String>>[];
+    var row = <String>[];
+    final cell = StringBuffer();
+    var inQuotes = false;
+    for (var i = 0; i < t.length; i++) {
+      final ch = t[i];
+      if (inQuotes) {
+        if (ch == '"') {
+          if (i + 1 < t.length && t[i + 1] == '"') {
+            cell.write('"');
+            i++;
+          } else {
+            inQuotes = false;
+          }
+        } else {
+          cell.write(ch);
+        }
+      } else if (ch == '"') {
+        inQuotes = true;
+      } else if (ch == sep) {
+        row.add(cell.toString());
+        cell.clear();
+      } else if (ch == '\n' || ch == '\r') {
+        if (ch == '\r' && i + 1 < t.length && t[i + 1] == '\n') i++;
+        row.add(cell.toString());
+        cell.clear();
+        if (row.any((c) => c.trim().isNotEmpty)) rows.add(row);
+        row = <String>[];
+      } else {
+        cell.write(ch);
+      }
+    }
+    row.add(cell.toString());
+    if (row.any((c) => c.trim().isNotEmpty)) rows.add(row);
+    return rows;
+  }
+
+  /// 5 Jun 2022 / 05/06/2022 (दिवस/महिना/वर्ष) / 2022-06-05
+  DateTime? _parseDob(String raw) {
+    final v = raw.trim();
+    if (v.isEmpty) return null;
+    DateTime? ok(int y, int m, int d) {
+      if (y < 1995 || y > DateTime.now().year) return null;
+      if (m < 1 || m > 12 || d < 1 || d > 31) return null;
+      final dt = DateTime(y, m, d);
+      return (dt.month == m && dt.day == d) ? dt : null;
+    }
+
+    var m = RegExp(r'^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$').firstMatch(v);
+    if (m != null) {
+      return ok(int.parse(m[1]!), int.parse(m[2]!), int.parse(m[3]!));
+    }
+    m = RegExp(r'^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$').firstMatch(v);
+    if (m != null) {
+      return ok(int.parse(m[3]!), int.parse(m[2]!), int.parse(m[1]!));
+    }
+    m = RegExp(r'^(\d{1,2})[ \-]([A-Za-z]{3,9})[ \-,]*(\d{4})$').firstMatch(v);
+    if (m != null) {
+      final name = m[2]!.toLowerCase().substring(0, 3);
+      for (var i = 1; i <= 12; i++) {
+        if (AppState.monthShort(i).toLowerCase().startsWith(name)) {
+          return ok(int.parse(m[3]!), i, int.parse(m[1]!));
+        }
+      }
+    }
+    return null;
+  }
+
+  List<_ImportRow> _buildImportRows(List<List<String>> table) {
+    final s = AdminState.instance;
+    String norm(String h) => h.toLowerCase().replaceAll(RegExp(r'[^a-z]'), '');
+    final head = [for (final h in table.first) norm(h)];
+    int col(List<String> names) {
+      for (final n in names) {
+        final i = head.indexOf(n);
+        if (i >= 0) return i;
+      }
+      return -1;
+    }
+
+    final cName = col(['name', 'studentname', 'student']);
+    final cClass = col(['class', 'classname']);
+    final cGender = col(['gender', 'sex']);
+    final cDob = col(['dateofbirth', 'dob', 'birthdate']);
+    final cBlood = col(['bloodgroup', 'blood']);
+    final cParent = col(['parent', 'parentname', 'guardian']);
+    final cEmail = col(['parentemail', 'email']);
+    final cPhone = col(['parentphone', 'phone', 'mobile']);
+
+    final defaultClass = _classFilter == null
+        ? null
+        : s.classes.where((c) => c.id == _classFilter).firstOrNull;
+
+    final missing = <String>[
+      if (cName < 0) 'Name',
+      if (cClass < 0 && defaultClass == null) 'Class',
+      if (cDob < 0) 'Date of birth',
+      if (cParent < 0) 'Parent',
+      if (cEmail < 0) 'Parent email',
+    ];
+    if (missing.isNotEmpty) {
+      return [
+        _ImportRow(0,
+            error: 'First row must be a header with column(s): '
+                '${missing.join(', ')}.'),
+      ];
+    }
+
+    String cell(List<String> r, int c) =>
+        (c >= 0 && c < r.length) ? r[c].trim() : '';
+
+    final seen = <String>{
+      for (final c in s.students)
+        '${c.classId}|${c.name.trim().toLowerCase()}|'
+            '${c.parentEmail.trim().toLowerCase()}',
+    };
+
+    final out = <_ImportRow>[];
+    for (var i = 1; i < table.length; i++) {
+      final r = table[i];
+      final line = i; // data row number (header सोडून)
+
+      final name = cell(r, cName);
+      if (name.isEmpty) {
+        out.add(_ImportRow(line, error: 'Student name is empty.'));
+        continue;
+      }
+
+      AdminClass? cls = defaultClass;
+      final clsText = cell(r, cClass);
+      if (clsText.isNotEmpty) {
+        cls = null;
+        for (final c in s.classes) {
+          if (c.className.trim().toLowerCase() == clsText.toLowerCase()) {
+            cls = c;
+          }
+        }
+      }
+      if (cls == null) {
+        out.add(_ImportRow(line,
+            name: name,
+            error: clsText.isEmpty
+                ? 'Class is empty.'
+                : 'Class "$clsText" does not exist. Create it in Classes first.'));
+        continue;
+      }
+
+      final dob = _parseDob(cell(r, cDob));
+      if (dob == null) {
+        out.add(_ImportRow(line,
+            name: name,
+            error: 'Date of birth "${cell(r, cDob)}" is not valid. '
+                'Use e.g. 5 Jun 2022 or 05/06/2022.'));
+        continue;
+      }
+
+      final parent = cell(r, cParent);
+      if (parent.isEmpty) {
+        out.add(_ImportRow(line, name: name, error: 'Parent name is empty.'));
+        continue;
+      }
+
+      final email = cell(r, cEmail).toLowerCase();
+      if (!email.contains('@')) {
+        out.add(_ImportRow(line,
+            name: name, error: 'Parent email "$email" is not valid.'));
+        continue;
+      }
+
+      final g = cell(r, cGender).toLowerCase();
+      String gender;
+      if (g.isEmpty || const ['boy', 'male', 'm', 'b'].contains(g)) {
+        gender = 'Boy';
+      } else if (const ['girl', 'female', 'f', 'g'].contains(g)) {
+        gender = 'Girl';
+      } else {
+        out.add(_ImportRow(line,
+            name: name, error: 'Gender "$g" must be Boy or Girl.'));
+        continue;
+      }
+
+      final phone = cell(r, cPhone);
+      if (phone.isNotEmpty) {
+        final digits = phone.replaceAll(RegExp(r'\D'), '');
+        if (digits.length < 7 || digits.length > 15) {
+          out.add(_ImportRow(line,
+              name: name, error: 'Phone "$phone" is not valid.'));
+          continue;
+        }
+      }
+
+      var blood = cell(r, cBlood).toUpperCase();
+      if (!_importBloods.contains(blood)) blood = '';
+
+      final key = '${cls.id}|${name.toLowerCase()}|$email';
+      if (!seen.add(key)) {
+        out.add(_ImportRow(line,
+            name: name,
+            error: 'Already exists in ${cls.className} (same name and email).'));
+        continue;
+      }
+
+      out.add(_ImportRow(
+        line,
+        name: name,
+        cls: cls,
+        gender: gender,
+        dob: dob,
+        blood: blood,
+        parent: parent,
+        email: email,
+        phone: phone,
+      ));
+    }
+    return out;
+  }
+
+  Future<void> _importCsv() async {
+    final s = AdminState.instance;
+    if (s.classes.isEmpty) {
+      adminSnack(context, 'Create a class first (Classes tab).', error: true);
+      return;
+    }
+    try {
+      final picked = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const ['csv'],
+        withData: true,
+      );
+      if (picked == null || picked.files.isEmpty) return;
+      final bytes = picked.files.first.bytes;
+      if (bytes == null) {
+        if (mounted) {
+          adminSnack(context, 'Could not read this file.', error: true);
+        }
+        return;
+      }
+
+      final table = _parseCsv(utf8.decode(bytes, allowMalformed: true));
+      if (table.length < 2) {
+        if (mounted) {
+          adminSnack(context, 'The file has no student rows.', error: true);
+        }
+        return;
+      }
+      if (table.length > 501) {
+        if (mounted) {
+          adminSnack(context, 'Import up to 500 students at a time.',
+              error: true);
+        }
+        return;
+      }
+
+      final rows = _buildImportRows(table);
+      final valid = rows.where((r) => r.error == null).toList();
+      final bad = rows.where((r) => r.error != null).toList();
+      if (!mounted) return;
+
+      final go = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: Colors.white,
+          surfaceTintColor: Colors.transparent,
+          title: const Text('Import students'),
+          content: SizedBox(
+            width: 460,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('${valid.length} student(s) ready to import',
+                      style: const TextStyle(
+                          fontWeight: FontWeight.w800,
+                          color: AdminColors.green)),
+                  if (bad.isNotEmpty) ...[
+                    const SizedBox(height: 6),
+                    Text('${bad.length} row(s) will be skipped',
+                        style: const TextStyle(
+                            fontWeight: FontWeight.w800,
+                            color: AdminColors.red)),
+                    const SizedBox(height: 6),
+                    for (final b in bad.take(8))
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 4),
+                        child: Text(
+                          b.line == 0
+                              ? b.error!
+                              : 'Row ${b.line}'
+                              '${b.name == null ? '' : ' (${b.name})'}: '
+                              '${b.error}',
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                      ),
+                    if (bad.length > 8)
+                      Text('…and ${bad.length - 8} more',
+                          style: const TextStyle(
+                              fontSize: 12, color: AdminColors.muted)),
+                  ],
+                  const SizedBox(height: 12),
+                  const Text(
+                    'Roll numbers are given automatically. Parents join the '
+                        'Parent app using the email in the file.',
+                    style: TextStyle(fontSize: 11, color: AdminColors.muted),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              style: adminPrimaryButton(),
+              onPressed:
+              valid.isEmpty ? null : () => Navigator.pop(ctx, true),
+              child: Text('Import ${valid.length}'),
+            ),
+          ],
+        ),
+      );
+      if (go != true || !mounted) return;
+
+      showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => const Center(child: CircularProgressIndicator()),
+      );
+      var added = 0;
+      Object? failure;
+      try {
+        final next = <String, int>{};
+        for (final r in valid) {
+          final cls = r.cls!;
+          final roll = next[cls.id] ?? s.nextRollFor(cls.id);
+          next[cls.id] = roll + 1;
+          await s.saveStudent(
+            ChildInfo(
+              name: r.name!,
+              className: cls.className,
+              classId: cls.id,
+              rollNo: roll,
+              dob: r.dob!,
+              bloodGroup: r.blood,
+              gender: r.gender,
+              allergyNote: '',
+              parentName: r.parent,
+              parentEmail: r.email,
+              pickupNote: '',
+              contacts: r.phone.isEmpty
+                  ? <ParentContact>[]
+                  : [ParentContact(r.parent, 'Parent', r.phone)],
+            ),
+            isNew: true,
+          );
+          added++;
+        }
+      } catch (e) {
+        failure = e;
+      }
+      if (mounted) Navigator.of(context).pop(); // progress dialog
+      if (!mounted) return;
+      if (failure != null) {
+        adminSnack(
+          context,
+          '$added imported, then stopped: ${AdminState.errorText(failure)}',
+          error: true,
+        );
+      } else {
+        adminSnack(context, '$added student(s) imported');
+      }
+    } catch (e) {
+      if (mounted) adminSnack(context, AdminState.errorText(e), error: true);
+    }
+  }
+
+  Future<void> _copyImportTemplate() async {
+    final cls = AdminState.instance.classes;
+    final example = cls.isEmpty ? 'Nursery' : cls.first.className;
+    await Clipboard.setData(ClipboardData(
+      text: 'Name,Class,Gender,Date of birth,Blood group,Parent,'
+          'Parent email,Parent phone\n'
+          'Aarav Patil,$example,Boy,5 Jun 2022,B+,Sunita Patil,'
+          'sunita@example.com,9876543210\n',
+    ));
+    if (mounted) {
+      adminSnack(context,
+          'Template copied. Paste in Excel, fill rows, save as CSV.');
+    }
+  }
+
   Future<void> _bulkDelete(List<ChildInfo> chosen) async {
     if (chosen.isEmpty) return;
     final ok = await adminConfirm(
@@ -506,6 +917,25 @@ class _AdminStudentsScreenState extends State<AdminStudentsScreen> {
                 DropdownMenuItem(value: 'Age: youngest', child: Text('Age: youngest')),
               ],
               onChanged: (v) => setState(() => _sortBy = v ?? 'Class & roll'),
+            ),
+            PopupMenuButton<String>(
+              tooltip: 'Bulk import',
+              onSelected: (v) {
+                if (v == 'import') _importCsv();
+                if (v == 'template') _copyImportTemplate();
+              },
+              itemBuilder: (_) => const [
+                PopupMenuItem(value: 'import', child: Text('Import students (CSV)')),
+                PopupMenuItem(value: 'template', child: Text('Copy CSV template')),
+              ],
+              child: IgnorePointer(
+                child: OutlinedButton.icon(
+                  style: adminSecondaryButton(),
+                  onPressed: () {},
+                  icon: const Icon(Icons.upload_file_rounded, size: 17),
+                  label: const Text('Import'),
+                ),
+              ),
             ),
             FilledButton.icon(
               style: adminPrimaryButton(),
@@ -865,6 +1295,10 @@ class _StudentFormState extends State<_StudentForm> {
   DateTime? _dob;
   String? _dobError;
 
+  // नवीन: AI attendance scan साठी एक चेहऱ्याचा फोटो ('data:image/jpeg;base64,...')
+  String _facePhoto = '';
+  static const int _maxFaceBytes = 150 * 1024; // Firestore document लहान राहावा
+
   @override
   void initState() {
     super.initState();
@@ -879,6 +1313,7 @@ class _StudentFormState extends State<_StudentForm> {
     _allergy = TextEditingController(text: e?.allergyNote ?? '');
     _pickup = TextEditingController(text: e?.pickupNote ?? '');
 
+    _facePhoto = e?.facePhoto ?? '';
     _classId = e?.classId ?? widget.defaultClassId;
     if (_classId != null && !s.classes.any((c) => c.id == _classId)) {
       _classId = null;
@@ -923,6 +1358,46 @@ class _StudentFormState extends State<_StudentForm> {
         _dobError = null;
       });
     }
+  }
+
+  Future<void> _pickFace() async {
+    try {
+      final x = await ImagePicker().pickImage(
+        source: ImageSource.gallery,
+        maxWidth: 400,
+        maxHeight: 400,
+        imageQuality: 60,
+      );
+      if (x == null) return;
+      final bytes = await x.readAsBytes();
+      if (!mounted) return;
+      if (bytes.length > _maxFaceBytes) {
+        adminSnack(context, 'Photo is too large. Please choose a smaller photo.',
+            error: true);
+        return;
+      }
+      setState(() => _facePhoto = 'data:image/jpeg;base64,${base64Encode(bytes)}');
+    } catch (e) {
+      if (mounted) adminSnack(context, 'Could not pick photo: $e', error: true);
+    }
+  }
+
+  Widget _faceAvatar() {
+    if (_facePhoto.isNotEmpty) {
+      try {
+        final comma = _facePhoto.indexOf(',');
+        final raw = comma < 0 ? _facePhoto : _facePhoto.substring(comma + 1);
+        return CircleAvatar(
+          radius: 30,
+          backgroundImage: MemoryImage(base64Decode(raw)),
+        );
+      } catch (_) {}
+    }
+    return const CircleAvatar(
+      radius: 30,
+      backgroundColor: Color(0xFFE4F3EF),
+      child: Icon(Icons.face_rounded, size: 30, color: Color(0xFF168C80)),
+    );
   }
 
   void _submit() {
@@ -970,6 +1445,7 @@ class _StudentFormState extends State<_StudentForm> {
         parentEmail: _email.text.trim().toLowerCase(),
         pickupNote: _pickup.text.trim(),
         contacts: contacts,
+        facePhoto: _facePhoto,
       ),
     );
   }
@@ -993,6 +1469,37 @@ class _StudentFormState extends State<_StudentForm> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 dialogField(_name, 'Student name', required: true),
+                // नवीन: चेहऱ्याचा फोटो (Teacher च्या AI attendance scan साठी)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 14),
+                  child: Row(
+                    children: [
+                      _faceAvatar(),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            OutlinedButton.icon(
+                              onPressed: _pickFace,
+                              icon: const Icon(Icons.add_a_photo_outlined,
+                                  size: 18),
+                              label: Text(_facePhoto.isEmpty
+                                  ? 'Add face photo'
+                                  : 'Change face photo'),
+                            ),
+                            const SizedBox(height: 4),
+                            const Text(
+                              'One clear, front-facing photo. Used for the '
+                                  'AI attendance scan.',
+                              style: TextStyle(fontSize: 11, color: Colors.grey),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
                 Row(
                   children: [
                     Expanded(
@@ -1233,4 +1740,31 @@ class _StudentMetricCard extends StatelessWidget {
       ),
     );
   }
+}
+
+/// CSV मधली एक ओळ (valid असेल तर `error == null`).
+class _ImportRow {
+  const _ImportRow(
+      this.line, {
+        this.name,
+        this.cls,
+        this.gender = 'Boy',
+        this.dob,
+        this.blood = '',
+        this.parent = '',
+        this.email = '',
+        this.phone = '',
+        this.error,
+      });
+
+  final int line;
+  final String? name;
+  final AdminClass? cls;
+  final String gender;
+  final DateTime? dob;
+  final String blood;
+  final String parent;
+  final String email;
+  final String phone;
+  final String? error;
 }

@@ -27,6 +27,13 @@ dependencies:
   # नंतर `flutter pub add gal` चालवून exact version पिन करा.
   gal: any
 
+  # ---- AI Face Scan Attendance (नवीन) ----
+  # `any` -> pub get तुमच्या SDK/Firebase शी जुळणारी version निवडतो.
+  google_mlkit_face_detection: any   # फोटोतले चेहरे शोधतो (offline)
+  tflite_flutter: any                # MobileFaceNet model चालवतो (offline)
+  image: any                         # फोटो decode / crop / resize
+  path_provider: any                 # ML Kit साठी temp file
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -51,3 +58,4 @@ flutter:
     - assets/images/admin/cta_school.jpg
     - assets/images/admin/hero_classroom.jpg
     - assets/images/admin/insights_dashboard.png
+    - assets/models/mobilefacenet.tflite   # नवीन: AI face model

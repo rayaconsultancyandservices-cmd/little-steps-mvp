@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../state/app_state.dart';
 import '../theme/app_colors.dart';
 import 'login_screen.dart';
+import 'teacher_notification_screen.dart';
 import '../services/auth_service.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -28,6 +29,23 @@ class _HomeScreenState extends State<HomeScreen> {
   ];
 
   void _go(int index) => widget.onNavigate(index);
+
+  @override
+  void initState() {
+    super.initState();
+    // नवीन: Notifications ची यादी / unread count तयार ठेवतो (payment requests सहित).
+    TeacherNotifStore.instance.start();
+  }
+
+  /// नवीन: bell दाबल्यावर Notifications screen (आधी थेट Messages उघडत होता).
+  Future<void> _openNotifications() async {
+    TeacherNotifStore.instance.refresh();
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => TeacherNotificationScreen(onOpenTab: _go),
+      ),
+    );
+  }
 
   String _greeting() {
     final hour = DateTime.now().hour;
@@ -105,7 +123,10 @@ class _HomeScreenState extends State<HomeScreen> {
       backgroundColor: background,
       body: SafeArea(
         child: ListenableBuilder(
-          listenable: AppState.instance,
+          listenable: Listenable.merge([
+            AppState.instance,
+            TeacherNotifStore.instance,
+          ]),
           builder: (context, _) {
             final s = AppState.instance;
             final now = DateTime.now();
@@ -154,6 +175,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildHeader(AppState s) {
+    final notifCount = TeacherNotifStore.instance.unreadCount(s);
     return Container(
       margin: const EdgeInsets.fromLTRB(12, 9, 12, 0),
       clipBehavior: Clip.antiAlias,
@@ -258,10 +280,10 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                     ),
                     _headerButton(
-                      onTap: () => _go(5),
+                      onTap: _openNotifications,
                       child: Badge(
-                        isLabelVisible: s.unreadMessages > 0,
-                        label: Text('${s.unreadMessages}'),
+                        isLabelVisible: notifCount > 0,
+                        label: Text(notifCount > 99 ? '99+' : '$notifCount'),
                         child: const Icon(
                           Icons.notifications_none_rounded,
                           color: Colors.white,
@@ -424,10 +446,12 @@ class _HomeScreenState extends State<HomeScreen> {
       children: [
         _sectionHeader('Quick Access', 'Everything you need in one place'),
         const SizedBox(height: 14),
-        LayoutBuilder(
-          builder: (context, constraints) {
-            const gap = 11.0;
-            final width = (constraints.maxWidth - gap * 2) / 3;
+        // बदल: 3x3 grid ऐवजी एकाच ओळीत आडवी (horizontal) scroll होणारी list.
+        // लहान cards: प्रत्येकाची रुंदी आता fixed (width) आहे.
+        Builder(
+          builder: (context) {
+            const gap = 10.0;
+            const width = 80.0;
 
             final tiles = <Widget>[
               _tile(
@@ -438,6 +462,15 @@ class _HomeScreenState extends State<HomeScreen> {
                 light: const Color(0xFFE5F5F0),
                 dot: !s.attendanceSaved,
                 onTap: () => _go(1),
+              ),
+              // नवीन: My Students — वर्गाची यादी + मुलाचं Profile
+              _tile(
+                width: width,
+                icon: Icons.groups_rounded,
+                label: 'My Students',
+                color: const Color(0xFF4779C8),
+                light: const Color(0xFFEAF1FF),
+                onTap: () => _go(10),
               ),
               _tile(
                 width: width,
@@ -512,7 +545,22 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ];
 
-            return Wrap(spacing: gap, runSpacing: gap, children: tiles);
+            // वरून थोडी जागा (padding top) — badge / लाल ठिपका कापला जाऊ नये म्हणून.
+            return SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              clipBehavior: Clip.none,
+              physics: const BouncingScrollPhysics(),
+              padding: const EdgeInsets.only(top: 8, right: 8, bottom: 6),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  for (var i = 0; i < tiles.length; i++) ...[
+                    if (i > 0) const SizedBox(width: gap),
+                    tiles[i],
+                  ],
+                ],
+              ),
+            );
           },
         ),
       ],
@@ -533,14 +581,14 @@ class _HomeScreenState extends State<HomeScreen> {
       width: width,
       child: Material(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(19),
+        borderRadius: BorderRadius.circular(16),
         child: InkWell(
           onTap: onTap,
-          borderRadius: BorderRadius.circular(19),
+          borderRadius: BorderRadius.circular(16),
           child: Container(
-            padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 5),
+            padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
             decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(19),
+              borderRadius: BorderRadius.circular(16),
               border: Border.all(color: AppColors.border),
               boxShadow: [
                 BoxShadow(
@@ -556,18 +604,18 @@ class _HomeScreenState extends State<HomeScreen> {
                   clipBehavior: Clip.none,
                   children: [
                     Container(
-                      height: 48,
-                      width: 48,
+                      height: 38,
+                      width: 38,
                       decoration: BoxDecoration(
                         color: light,
-                        borderRadius: BorderRadius.circular(16),
+                        borderRadius: BorderRadius.circular(13),
                       ),
-                      child: Icon(icon, color: color, size: 24),
+                      child: Icon(icon, color: color, size: 20),
                     ),
                     if (count > 0)
                       Positioned(
-                        top: -7,
-                        right: -7,
+                        top: -6,
+                        right: -8,
                         child: _notificationBadge('$count'),
                       )
                     else if (dot)
@@ -586,7 +634,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                   ],
                 ),
-                const SizedBox(height: 10),
+                const SizedBox(height: 7),
                 Text(
                   label,
                   maxLines: 1,
@@ -594,7 +642,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   textAlign: TextAlign.center,
                   style: const TextStyle(
                     color: dark,
-                    fontSize: 10.5,
+                    fontSize: 10,
                     fontWeight: FontWeight.w800,
                   ),
                 ),
@@ -678,12 +726,17 @@ class _HomeScreenState extends State<HomeScreen> {
               Row(
                 children: [
                   Expanded(
-                    child: _statBox(
-                      'Students',
-                      '${s.totalChildren}',
-                      Icons.groups_rounded,
-                      const Color(0xFF4779C8),
-                      const Color(0xFFEAF1FF),
+                    // नवीन: Students box दाबल्यावर My Students उघडतो.
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () => _go(10),
+                      child: _statBox(
+                        'Students',
+                        '${s.totalChildren}',
+                        Icons.groups_rounded,
+                        const Color(0xFF4779C8),
+                        const Color(0xFFEAF1FF),
+                      ),
                     ),
                   ),
                   const SizedBox(width: 8),

@@ -1,3 +1,4 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -11,6 +12,14 @@ import '../widgets/page_app_bar.dart';
 //  - प्रत्येक मुलाची fee यादी -> fee जोडा, बदला, काढा, "paid" करा (receipt तयार)
 //  - संपूर्ण वर्गाला एकच fee एकदम जोडणे
 // इथे केलेला बदल Parent app मध्ये लगेच दिसतो.
+//
+// NEW (Payment requests):
+//  - Parent ने UPI ने भरून पाठवलेली request (UTR सह) इथे दिसते
+//  - "Verify" -> fee आपोआप paid + receipt (UTR सहित) तयार + request verified
+//  - "Reject" -> कारण (पर्यायी) लिहिता येते, Parent ला दिसते
+//  - वर्गाच्या यादीत "To verify" filter + वर banner
+//  - AppBar मधून School चा UPI ID / नाव सेट करता येतो (Parent चं "Pay online" चालू होतं)
+//  - Manual "Mark paid" केल्यावर त्या fee ची submitted request आपोआप verified होते
 // =====================================================================
 
 const Color _primary = Color(0xFF168C80);
@@ -61,6 +70,76 @@ InputDecoration _fieldDec(String label, {String? hint, String? prefix}) =>
       border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
     );
 
+/// 3:07 PM
+String _time(DateTime d) {
+  final h = d.hour % 12 == 0 ? 12 : d.hour % 12;
+  final m = d.minute.toString().padLeft(2, '0');
+  return '$h:$m ${d.hour >= 12 ? 'PM' : 'AM'}';
+}
+
+/// Parent चा UPI ID वैध आहे का (Parent app मधला नियम तोच).
+final RegExp _upiRe = RegExp(r'^[A-Za-z0-9.\-_]{2,}@[A-Za-z]{2,}$');
+
+// =====================================================================
+// Parent ची payment request  (students/{studentId}/payments/{id})
+// =====================================================================
+class _Claim {
+  const _Claim({
+    required this.id,
+    required this.studentId,
+    required this.feeId,
+    required this.title,
+    required this.amount,
+    required this.utr,
+    required this.status,
+    required this.createdAt,
+    this.note = '',
+  });
+
+  final String id;
+  final String studentId;
+  final String feeId;
+  final String title;
+  final int amount;
+  final String utr;
+
+  /// submitted | verified | rejected
+  final String status;
+  final DateTime createdAt;
+  final String note;
+
+  bool get isSubmitted => status == 'submitted';
+
+  factory _Claim.fromDoc(
+      String studentId, QueryDocumentSnapshot<Map<String, dynamic>> d) {
+    final x = d.data();
+    final ts = x['createdAt'];
+    final amt = x['amount'];
+    return _Claim(
+      id: d.id,
+      studentId: studentId,
+      feeId: (x['feeId'] ?? '').toString(),
+      title: (x['title'] ?? '').toString(),
+      amount: amt is num ? amt.toInt() : 0,
+      utr: (x['utr'] ?? '').toString(),
+      status: (x['status'] ?? 'submitted').toString(),
+      createdAt: ts is Timestamp ? ts.toDate() : DateTime.now(),
+      note: (x['note'] ?? '').toString(),
+    );
+  }
+}
+
+/// एका मुलाच्या सर्व payment requests (नवीन आधी).
+Future<List<_Claim>> _loadClaims(String studentId) async {
+  final snap = await FirebaseFirestore.instance
+      .collection('students')
+      .doc(studentId)
+      .collection('payments')
+      .get();
+  return [for (final d in snap.docs) _Claim.fromDoc(studentId, d)]
+    ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+}
+
 // =====================================================================
 // 1) वर्गाची Fees यादी
 // =====================================================================
@@ -73,26 +152,105 @@ class TeacherFeesScreen extends StatefulWidget {
   State<TeacherFeesScreen> createState() => _TeacherFeesScreenState();
 }
 
-class _TeacherFeesScreenState extends State<TeacherFeesScreen> {
+class _TeacherFeesScreenState extends State<TeacherFeesScreen>
+    with WidgetsBindingObserver {
   Map<String, List<FeeItem>> _fees = {};
   bool _loading = true;
-  int _filter = 0; // 0 सर्व, 1 बाकी (dues), 2 clear
+  Map<String, List<_Claim>> _claims = {};
+  bool _claimsFailed = false;
+  int _filter = 0; // 0 सर्व, 1 बाकी (dues), 2 clear, 3 verify करायच्या requests
   String _query = '';
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _load();
   }
 
-  Future<void> _load() async {
-    if (mounted) setState(() => _loading = true);
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  /// App परत उघडल्यावर (background -> foreground) नवीन payment requests
+  /// आपोआप घेतो, spinner न दाखवता.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && mounted) {
+      _load(silent: true);
+    }
+  }
+
+  Future<void> _load({bool silent = false}) async {
+    if (!silent && mounted) setState(() => _loading = true);
     final data = await AppState.instance.loadClassFees();
+
+    // Parent च्या payment requests (प्रत्येक मुलाच्या `payments` मधून).
+    final claims = <String, List<_Claim>>{};
+    _claimsFailed = false;
+    await Future.wait([
+      for (final s in AppState.instance.students) _loadClaimsFor(s.id, claims),
+    ]);
+
     if (!mounted) return;
     setState(() {
       _fees = data;
+      _claims = claims;
       _loading = false;
     });
+  }
+
+  Future<void> _loadClaimsFor(String id, Map<String, List<_Claim>> out) async {
+    try {
+      out[id] = await _loadClaims(id);
+    } catch (_) {
+      _claimsFailed = true;
+    }
+  }
+
+  int _toVerify(String studentId) =>
+      (_claims[studentId] ?? const <_Claim>[]).where((c) => c.isSubmitted).length;
+
+  /// School चा UPI ID / नाव सेट करतो (`classes/{classId}`), Parent चं "Pay online" यावर चालतं.
+  Future<void> _editUpi() async {
+    final classId = AppState.instance.classId;
+    if (classId.isEmpty) {
+      _snack('Your class was not found.');
+      return;
+    }
+    var upi = '';
+    var name = '';
+    try {
+      final d = await FirebaseFirestore.instance
+          .collection('classes')
+          .doc(classId)
+          .get();
+      final m = d.data();
+      upi = (m?['upiId'] ?? '').toString();
+      name = (m?['upiName'] ?? '').toString();
+    } catch (_) {}
+    if (!mounted) return;
+
+    final res = await showDialog<(String, String)>(
+      context: context,
+      builder: (_) => _UpiDialog(upiId: upi, upiName: name),
+    );
+    if (res == null || !mounted) return;
+    try {
+      await FirebaseFirestore.instance.collection('classes').doc(classId).set(
+        {'upiId': res.$1, 'upiName': res.$2},
+        SetOptions(merge: true),
+      );
+      if (!mounted) return;
+      _snack(res.$1.isEmpty
+          ? 'Online payment turned off. Parents will pay at school.'
+          : 'School UPI saved. Parents can now pay online.');
+    } catch (e) {
+      if (!mounted) return;
+      _snack('Could not save UPI: $e');
+    }
   }
 
   void _snack(String text) {
@@ -143,6 +301,7 @@ class _TeacherFeesScreenState extends State<TeacherFeesScreen> {
           studentId: c.id,
           studentName: c.name,
           rollNo: c.rollNo,
+          classClaims: _claims,
         ),
       ),
     );
@@ -159,6 +318,11 @@ class _TeacherFeesScreenState extends State<TeacherFeesScreen> {
         onBack: widget.onBack,
         actions: [
           IconButton(
+            tooltip: 'School UPI for online payments',
+            onPressed: _loading ? null : _editUpi,
+            icon: const Icon(Icons.qr_code_2_rounded, color: _primary),
+          ),
+          IconButton(
             tooltip: 'Add fee for whole class',
             onPressed: _loading ? null : _addForClass,
             icon: const Icon(Icons.playlist_add_rounded, color: _primary),
@@ -173,12 +337,14 @@ class _TeacherFeesScreenState extends State<TeacherFeesScreen> {
           var totalDue = 0;
           var totalPaid = 0;
           var withDues = 0;
+          var toVerify = 0;
           for (final s in students) {
             final f = _fees[s.id] ?? const <FeeItem>[];
             final d = _dueTotal(f);
             totalDue += d;
             totalPaid += _paidTotal(f);
             if (d > 0) withDues++;
+            toVerify += _toVerify(s.id);
           }
 
           final q = _query.trim().toLowerCase();
@@ -187,6 +353,7 @@ class _TeacherFeesScreenState extends State<TeacherFeesScreen> {
             final due = _dueTotal(_fees[s.id] ?? const <FeeItem>[]);
             if (_filter == 1 && due == 0) return false;
             if (_filter == 2 && due > 0) return false;
+            if (_filter == 3 && _toVerify(s.id) == 0) return false;
             return true;
           }).toList();
 
@@ -211,6 +378,10 @@ class _TeacherFeesScreenState extends State<TeacherFeesScreen> {
                             _stat('With dues', '$withDues', _red),
                           ],
                         ),
+                        if (toVerify > 0) ...[
+                          const SizedBox(height: 12),
+                          _requestsBanner(toVerify),
+                        ],
                         const SizedBox(height: 14),
                         TextField(
                           onChanged: (v) => setState(() => _query = v),
@@ -239,8 +410,21 @@ class _TeacherFeesScreenState extends State<TeacherFeesScreen> {
                             _chip('All', 0),
                             _chip('Dues', 1),
                             _chip('Clear', 2),
+                            _chip(
+                              toVerify > 0 ? 'To verify ($toVerify)' : 'To verify',
+                              3,
+                            ),
                           ],
                         ),
+                        if (_claimsFailed)
+                          const Padding(
+                            padding: EdgeInsets.only(top: 8),
+                            child: Text(
+                              'Payment requests could not be loaded. '
+                                  'Please publish the latest Firestore rules.',
+                              style: TextStyle(fontSize: 11, color: _red),
+                            ),
+                          ),
                         const SizedBox(height: 12),
                         if (_loading)
                           const Padding(
@@ -266,6 +450,38 @@ class _TeacherFeesScreenState extends State<TeacherFeesScreen> {
       ),
     );
   }
+
+  Widget _requestsBanner(int count) => InkWell(
+    onTap: () => setState(() => _filter = 3),
+    borderRadius: BorderRadius.circular(16),
+    child: Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: _orange.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: _orange.withValues(alpha: 0.45)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.pending_actions_rounded, color: _orange, size: 22),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              count == 1
+                  ? '1 payment request is waiting for your verification'
+                  : '$count payment requests are waiting for your verification',
+              style: const TextStyle(
+                fontSize: 12.5,
+                fontWeight: FontWeight.w800,
+                color: _dark,
+              ),
+            ),
+          ),
+          const Icon(Icons.chevron_right_rounded, color: _orange),
+        ],
+      ),
+    ),
+  );
 
   Widget _emptyNote(String text) => Padding(
     padding: const EdgeInsets.symmetric(vertical: 36),
@@ -336,6 +552,7 @@ class _TeacherFeesScreenState extends State<TeacherFeesScreen> {
       color = _green;
     }
 
+    final tv = _toVerify(s.id);
     final parts = s.name.trim().split(RegExp(r'\s+'));
     final initials = parts.isEmpty || parts.first.isEmpty
         ? '?'
@@ -375,12 +592,24 @@ class _TeacherFeesScreenState extends State<TeacherFeesScreen> {
             color: _dark,
           ),
         ),
-        subtitle: Text(
-          'Roll ${s.rollNo}  •  $subtitle',
-          style: TextStyle(
-            fontSize: 11,
-            fontWeight: FontWeight.w600,
-            color: color,
+        subtitle: Text.rich(
+          TextSpan(
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              color: color,
+            ),
+            children: [
+              TextSpan(text: 'Roll ${s.rollNo}  •  $subtitle'),
+              if (tv > 0)
+                TextSpan(
+                  text: '  •  $tv to verify',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w800,
+                    color: _orange,
+                  ),
+                ),
+            ],
           ),
         ),
         trailing: const Icon(Icons.chevron_right_rounded, color: _muted),
@@ -397,11 +626,15 @@ class _StudentFeesPage extends StatefulWidget {
     required this.studentId,
     required this.studentName,
     required this.rollNo,
+    this.classClaims = const <String, List<_Claim>>{},
   });
 
   final String studentId;
   final String studentName;
   final int rollNo;
+
+  /// वर्गातल्या सर्व मुलांच्या payment requests (duplicate UTR तपासण्यासाठी).
+  final Map<String, List<_Claim>> classClaims;
 
   @override
   State<_StudentFeesPage> createState() => _StudentFeesPageState();
@@ -410,6 +643,7 @@ class _StudentFeesPage extends StatefulWidget {
 class _StudentFeesPageState extends State<_StudentFeesPage> {
   List<FeeItem> _fees = [];
   List<FeeReceipt> _receipts = [];
+  List<_Claim> _claims = [];
   bool _loading = true;
   String? _error;
 
@@ -430,11 +664,14 @@ class _StudentFeesPageState extends State<_StudentFeesPage> {
       final results = await Future.wait([
         AppState.instance.loadStudentFees(widget.studentId),
         AppState.instance.loadStudentReceipts(widget.studentId),
+        // Requests लोड न झाल्या (rules नसतील) तरी fees screen चालू राहावा.
+        _loadClaims(widget.studentId).catchError((Object _) => <_Claim>[]),
       ]);
       if (!mounted) return;
       setState(() {
         _fees = results[0] as List<FeeItem>;
         _receipts = results[1] as List<FeeReceipt>;
+        _claims = results[2] as List<_Claim>;
         _loading = false;
       });
     } catch (e) {
@@ -552,8 +789,149 @@ class _StudentFeesPageState extends State<_StudentFeesPage> {
     );
     if (mode == null || !mounted) return;
     await _run(
-          () => AppState.instance.markFeePaid(widget.studentId, f, mode),
+          () async {
+        await AppState.instance.markFeePaid(widget.studentId, f, mode);
+        // या fee साठी Parent ची "submitted" request असेल तर ती सुद्धा verified करतो.
+        for (final c in _claims) {
+          if (c.feeId == f.id && c.isSubmitted) {
+            try {
+              await FirebaseFirestore.instance
+                  .collection('students')
+                  .doc(widget.studentId)
+                  .collection('payments')
+                  .doc(c.id)
+                  .update({
+                'status': 'verified',
+                'reviewedAt': Timestamp.now(),
+                'reviewedBy': AppState.instance.teacherName,
+              });
+            } catch (_) {}
+          }
+        }
+      },
       'Marked as paid. Receipt created.',
+    );
+  }
+
+  /// Parent ची payment request verify: fee paid + receipt (UTR सह) + request verified.
+  /// हाच UTR वर्गात आधीच verified झालेला असेल तर त्या मुलाचं नाव देतो.
+  String? _duplicateOf(_Claim c) {
+    final key = c.utr.trim().toUpperCase();
+    if (key.isEmpty) return null;
+    final pool = <_Claim>[
+      ..._claims,
+      for (final l in widget.classClaims.values) ...l,
+    ];
+    for (final o in pool) {
+      if (o.id == c.id && o.studentId == c.studentId) continue;
+      if (o.status != 'verified') continue;
+      if (o.utr.trim().toUpperCase() != key) continue;
+      if (o.studentId == widget.studentId) return widget.studentName;
+      for (final s in AppState.instance.students) {
+        if (s.id == o.studentId) return s.name;
+      }
+      return 'another student';
+    }
+    return null;
+  }
+
+  Future<void> _verifyClaim(_Claim c) async {
+    final matches = _fees.where((f) => f.id.isNotEmpty && f.id == c.feeId);
+    if (matches.isEmpty) {
+      _snack('The fee for this request no longer exists. '
+          'You can reject the request.');
+      return;
+    }
+    final fee = matches.first;
+    final already = fee.status == FeeStatus.paid;
+    final amountDiffers = fee.amount != c.amount;
+    final dupOf = _duplicateOf(c);
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text(
+          'Verify payment?',
+          style: TextStyle(fontWeight: FontWeight.w800),
+        ),
+        content: Text(
+          '${fee.title}\n'
+              'Amount: ${_money(fee.amount)}\n'
+              'UTR: ${c.utr}\n\n'
+              '${already ? 'This fee is already marked paid. The request will just be marked verified.' : 'The fee will be marked paid and a receipt (mode UPI) will be created for the parent.'}'
+              '${amountDiffers ? '\n\nNote: the parent paid for ${_money(c.amount)}, but the fee is now ${_money(fee.amount)}. Check your bank before verifying.' : ''}'
+              '${dupOf != null ? '\n\nWarning: this UTR was already verified for $dupOf. Verify again only if you are sure it is a different payment.' : ''}'
+              '\n\nVerify only after you see this UTR in your bank / UPI app.',
+          style: const TextStyle(fontSize: 12.5, height: 1.5),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: dupOf != null ? _orange : _green,
+              foregroundColor: Colors.white,
+            ),
+            child: Text(dupOf != null ? 'Verify anyway' : 'Verify'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+
+    await _run(
+          () async {
+        final db = FirebaseFirestore.instance;
+        final sRef = db.collection('students').doc(widget.studentId);
+        final batch = db.batch();
+        if (!already) {
+          batch.update(sRef.collection('fees').doc(fee.id), {'status': 'paid'});
+          batch.set(sRef.collection('receipts').doc(), {
+            'title': fee.title,
+            'amount': fee.amount,
+            'date': Timestamp.now(),
+            'mode': 'UPI',
+            'feeId': fee.id,
+            'utr': c.utr,
+          });
+        }
+        batch.update(sRef.collection('payments').doc(c.id), {
+          'status': 'verified',
+          'reviewedAt': Timestamp.now(),
+          'reviewedBy': AppState.instance.teacherName,
+        });
+        await batch.commit();
+      },
+      already
+          ? 'Request marked as verified.'
+          : 'Payment verified. Fee marked paid and receipt created.',
+    );
+  }
+
+  /// Parent ची payment request reject (कारण पर्यायी, Parent ला दिसतं).
+  Future<void> _rejectClaim(_Claim c) async {
+    final reason = await showDialog<String>(
+      context: context,
+      builder: (_) => _RejectDialog(claim: c),
+    );
+    if (reason == null || !mounted) return;
+    await _run(
+          () => FirebaseFirestore.instance
+          .collection('students')
+          .doc(widget.studentId)
+          .collection('payments')
+          .doc(c.id)
+          .update({
+        'status': 'rejected',
+        'note': reason,
+        'reviewedAt': Timestamp.now(),
+        'reviewedBy': AppState.instance.teacherName,
+      }),
+      'Request rejected. The parent can see your note.',
     );
   }
 
@@ -597,6 +975,8 @@ class _StudentFeesPageState extends State<_StudentFeesPage> {
   Widget build(BuildContext context) {
     final pending = _fees.where((f) => f.status != FeeStatus.paid).toList();
     final paid = _fees.where((f) => f.status == FeeStatus.paid).toList();
+    final submitted = _claims.where((c) => c.isSubmitted).toList();
+    final reviewed = _claims.where((c) => !c.isSubmitted).toList();
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -638,6 +1018,12 @@ class _StudentFeesPageState extends State<_StudentFeesPage> {
                         _summary('Paid', _money(_paidTotal(_fees)), _green),
                       ],
                     ),
+                    if (submitted.isNotEmpty) ...[
+                      const SizedBox(height: 18),
+                      _title('Payment requests to verify (${submitted.length})'),
+                      const SizedBox(height: 8),
+                      for (final c in submitted) _claimCard(c),
+                    ],
                     const SizedBox(height: 18),
                     _title('Pending (${pending.length})'),
                     const SizedBox(height: 8),
@@ -657,12 +1043,206 @@ class _StudentFeesPageState extends State<_StudentFeesPage> {
                       const SizedBox(height: 8),
                       for (final f in paid) _paidCard(f),
                     ],
+                    if (reviewed.isNotEmpty) ...[
+                      const SizedBox(height: 14),
+                      _title('Earlier payment requests (${reviewed.length})'),
+                      const SizedBox(height: 8),
+                      for (final c in reviewed) _reviewedCard(c),
+                    ],
                   ],
                 ),
               ),
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _claimCard(_Claim c) {
+    FeeItem? fee;
+    for (final f in _fees) {
+      if (f.id.isNotEmpty && f.id == c.feeId) {
+        fee = f;
+        break;
+      }
+    }
+    String? warn;
+    if (fee == null) {
+      warn = 'The fee for this request was deleted.';
+    } else if (fee.status == FeeStatus.paid) {
+      warn = 'This fee is already marked paid.';
+    } else if (fee.amount != c.amount) {
+      warn = 'Fee is now ${_money(fee.amount)}, parent paid ${_money(c.amount)}.';
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: _orange.withValues(alpha: 0.55)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  c.title.isEmpty ? 'Fee payment' : c.title,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w800,
+                    color: _dark,
+                  ),
+                ),
+              ),
+              Text(
+                _money(c.amount),
+                style: const TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w900,
+                  color: _dark,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'UTR: ${c.utr}',
+                  style: const TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w700,
+                    color: _dark,
+                  ),
+                ),
+              ),
+              InkWell(
+                onTap: () async {
+                  await Clipboard.setData(ClipboardData(text: c.utr));
+                  if (mounted) _snack('UTR copied.');
+                },
+                borderRadius: BorderRadius.circular(8),
+                child: const Padding(
+                  padding: EdgeInsets.all(4),
+                  child: Icon(Icons.copy_rounded, size: 16, color: _primary),
+                ),
+              ),
+            ],
+          ),
+          Text(
+            'Sent ${_date(c.createdAt)}, ${_time(c.createdAt)}  •  UPI',
+            style: const TextStyle(fontSize: 11, color: _muted),
+          ),
+          if (warn != null) ...[
+            const SizedBox(height: 6),
+            Text(
+              warn,
+              style: const TextStyle(
+                fontSize: 11.5,
+                fontWeight: FontWeight.w700,
+                color: _red,
+              ),
+            ),
+          ],
+          const SizedBox(height: 10),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              OutlinedButton(
+                onPressed: () => _rejectClaim(c),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: _red,
+                  side: const BorderSide(color: _red),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+                child: const Text('Reject'),
+              ),
+              const SizedBox(width: 8),
+              ElevatedButton.icon(
+                onPressed: fee == null ? null : () => _verifyClaim(c),
+                icon: const Icon(Icons.verified_rounded, size: 16),
+                label: const Text('Verify'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: _green,
+                  foregroundColor: Colors.white,
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _reviewedCard(_Claim c) {
+    final ok = c.status == 'verified';
+    final color = ok ? _green : _red;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            ok ? Icons.verified_rounded : Icons.cancel_rounded,
+            color: color,
+            size: 20,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '${c.title.isEmpty ? 'Fee payment' : c.title}  •  ${_money(c.amount)}',
+                  style: const TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w800,
+                    color: _dark,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'UTR ${c.utr}  •  ${_date(c.createdAt)}',
+                  style: const TextStyle(fontSize: 11, color: _muted),
+                ),
+                if (!ok && c.note.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text(
+                      'Note: ${c.note}',
+                      style: const TextStyle(fontSize: 11, color: _red),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          Text(
+            ok ? 'Verified' : 'Rejected',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w800,
+              color: color,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -736,6 +1316,14 @@ class _StudentFeesPageState extends State<_StudentFeesPage> {
     final label = upcoming ? 'Upcoming' : (overdue ? 'Overdue' : 'Due');
     final color = upcoming ? _muted : (overdue ? _red : _orange);
 
+    _Claim? sent;
+    for (final c in _claims) {
+      if (c.isSubmitted && f.id.isNotEmpty && c.feeId == f.id) {
+        sent = c;
+        break;
+      }
+    }
+
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.fromLTRB(14, 12, 6, 12),
@@ -783,6 +1371,19 @@ class _StudentFeesPageState extends State<_StudentFeesPage> {
               ),
             ],
           ),
+          if (sent != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(
+                'Parent sent a payment request (UTR ${sent.utr}). '
+                    'Verify it above.',
+                style: const TextStyle(
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w700,
+                  color: _orange,
+                ),
+              ),
+            ),
           Row(
             children: [
               Container(
@@ -1138,6 +1739,172 @@ class _PayDialogState extends State<_PayDialog> {
             elevation: 0,
           ),
           child: const Text('Mark paid'),
+        ),
+      ],
+    );
+  }
+}
+
+// =====================================================================
+// School UPI dialog (Parent ला "Pay online" देण्यासाठी)
+// =====================================================================
+class _UpiDialog extends StatefulWidget {
+  const _UpiDialog({required this.upiId, required this.upiName});
+
+  final String upiId;
+  final String upiName;
+
+  @override
+  State<_UpiDialog> createState() => _UpiDialogState();
+}
+
+class _UpiDialogState extends State<_UpiDialog> {
+  final _formKey = GlobalKey<FormState>();
+  late final TextEditingController _id =
+  TextEditingController(text: widget.upiId);
+  late final TextEditingController _name =
+  TextEditingController(text: widget.upiName);
+
+  @override
+  void dispose() {
+    _id.dispose();
+    _name.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    if (!_formKey.currentState!.validate()) return;
+    final id = _id.text.trim();
+    Navigator.pop(context, (id, id.isEmpty ? '' : _name.text.trim()));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+      title: const Text(
+        'School UPI for online payments',
+        style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+      ),
+      content: SingleChildScrollView(
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Parents will see "Pay online" and pay to this UPI ID. '
+                    'Leave it empty to turn online payment off.',
+                style: TextStyle(fontSize: 11.5, height: 1.5, color: _muted),
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _id,
+                keyboardType: TextInputType.emailAddress,
+                autocorrect: false,
+                decoration: _fieldDec('UPI ID', hint: 'e.g. littlesteps@upi'),
+                validator: (v) {
+                  final t = (v ?? '').trim();
+                  if (t.isEmpty) return null;
+                  return _upiRe.hasMatch(t) ? null : 'Enter a valid UPI ID';
+                },
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _name,
+                textCapitalization: TextCapitalization.words,
+                decoration:
+                _fieldDec('Account name (optional)', hint: 'School name'),
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        ElevatedButton(
+          onPressed: _save,
+          style: ElevatedButton.styleFrom(
+            backgroundColor: _primary,
+            foregroundColor: Colors.white,
+            elevation: 0,
+          ),
+          child: const Text('Save'),
+        ),
+      ],
+    );
+  }
+}
+
+// =====================================================================
+// Reject dialog: कारण (पर्यायी) - Parent ला दिसतं
+// =====================================================================
+class _RejectDialog extends StatefulWidget {
+  const _RejectDialog({required this.claim});
+
+  final _Claim claim;
+
+  @override
+  State<_RejectDialog> createState() => _RejectDialogState();
+}
+
+class _RejectDialogState extends State<_RejectDialog> {
+  final _note = TextEditingController();
+
+  @override
+  void dispose() {
+    _note.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      title: const Text(
+        'Reject payment request?',
+        style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '${widget.claim.title}  •  ${_money(widget.claim.amount)}\n'
+                'UTR: ${widget.claim.utr}',
+            style: const TextStyle(fontSize: 12.5, height: 1.5, color: _muted),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _note,
+            maxLength: 120,
+            minLines: 1,
+            maxLines: 3,
+            textCapitalization: TextCapitalization.sentences,
+            decoration: _fieldDec(
+              'Reason for parent (optional)',
+              hint: 'e.g. UTR not found in bank',
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        ElevatedButton(
+          onPressed: () => Navigator.pop(context, _note.text.trim()),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: _red,
+            foregroundColor: Colors.white,
+            elevation: 0,
+          ),
+          child: const Text('Reject'),
         ),
       ],
     );

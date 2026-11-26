@@ -1,6 +1,11 @@
+import 'dart:typed_data';
+
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:image_picker/image_picker.dart';
 
+import '../services/face_match_service.dart';
 import '../state/app_state.dart';
 import '../widgets/page_app_bar.dart';
 
@@ -9,14 +14,26 @@ const String _kPresent = 'P';
 const String _kAbsent = 'A';
 const String _kLate = 'L';
 
+// नवीन: मंजूर रजा असतानाही मूल शाळेत आलं, तर Teacher ने Present केल्यावर हा शेरा
+// (reason) save होतो. त्यावरून पुढच्या वेळी कळतं की हा Present जाणूनबुजून केलेला आहे,
+// आणि तो पुन्हा आपोआप Absent केला जात नाही. Parent ला पण हा शेरा दिसतो.
+const String _kCameOnLeave = 'Came despite approved leave';
+
 class _Student {
   _Student(this.id, this.name);
 
   final String id; // Firestore student id
   final String name;
   bool touched = false; // Teacher ने या session मध्ये स्वतः mark केलं का
+  // नवीन: मंजूर रजेमुळे आपोआप Absent झालं आहे का (Teacher ने स्वतः mark केलेलं नाही).
+  bool leaveAuto = false;
   String? status;
   String? reason; // absence reason
+
+  // नवीन (AI scan): 0 = AI ने काही केलं नाही, 1 = AI ने Present केलं (confident),
+  // 2 = AI ला खात्री नाही, 3 = AI ला मूल दिसलं नाही.
+  int aiState = 0;
+  double? aiConfidence; // 0.0 - 1.0
 }
 
 class AttendanceScreen extends StatefulWidget {
@@ -54,19 +71,93 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   String searchQuery = '';
 
   // ---------------------------------------------------------------
+  // नवीन: मागच्या दिवसांचा attendance पाहणे (फक्त पाहता येतो, बदलता येत नाही)
+  // ---------------------------------------------------------------
+  DateTime _selectedDay = _dateOnly(DateTime.now());
+  final List<_Student> _pastStudents = [];
+  Map<String, String> _pastStatus = {};
+  Map<String, String> _pastReason = {};
+  bool _loadingPast = false;
+  String? _pastError;
+  bool _pastLoaded = false;
+  int _loadToken = 0;
+
+  // ---------------------------------------------------------------
+  // नवीन: "Scan class with camera" (AI)
+  // ---------------------------------------------------------------
+  bool _scanning = false;
+  static const double _aiSure = 0.90; // यापेक्षा जास्त = आपोआप Present
+  static const double _aiMaybe = 0.60; // यादरम्यान = "AI unsure — tap P or A"
+
+  static DateTime _dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
+
+  /// निवडलेला दिवस आजचा आहे का? (आजचा असेल तर नेहमीसारखं mark / save चालतं)
+  bool get _isToday => _selectedDay == _dateOnly(DateTime.now());
+
+  /// आज असेल तर आजची list, नाहीतर निवडलेल्या मागच्या दिवसाची list.
+  List<_Student> get _view => _isToday ? students : _pastStudents;
+
+  // ---------------------------------------------------------------
   // COUNTS
   // ---------------------------------------------------------------
-  int get lateCount => students.where((s) => s.status == _kLate).length;
+  int get lateCount => _view.where((s) => s.status == _kLate).length;
 
   /// Present includes late students (they are in class).
   int get present =>
-      students.where((s) => s.status == _kPresent || s.status == _kLate).length;
+      _view.where((s) => s.status == _kPresent || s.status == _kLate).length;
 
-  int get absent => students.where((s) => s.status == _kAbsent).length;
+  int get absent => _view.where((s) => s.status == _kAbsent).length;
 
-  int get notMarked => students.where((s) => s.status == null).length;
+  /// नवीन: आधी 'Present / Late' save झालं होतं, पण नंतर रजा मंजूर झाली, म्हणून आता
+  /// आपोआप Absent केलेली मुलं. Save दाबेपर्यंत Parent app ला जुनं (Present) दिसतं.
+  List<_Student> get _leaveFixed {
+    final saved = AppState.instance.attendanceStatuses;
+    return students.where((s) {
+      final old = saved[s.id];
+      return s.leaveAuto && (old == _kPresent || old == _kLate);
+    }).toList();
+  }
 
-  int get total => students.length;
+  Widget _buildLeaveFixNotice() {
+    final fixed = _leaveFixed;
+    if (fixed.isEmpty) return const SizedBox.shrink();
+    final names = fixed.map((s) => s.name).join(', ');
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF1ECFB),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFD9CEF3)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.info_outline_rounded,
+              size: 18, color: Color(0xFF8066C8)),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              '$names ${fixed.length == 1 ? 'has' : 'have'} an approved leave '
+                  'today, but was saved as Present earlier. Changed to Absent '
+                  '(Approved leave). Tap Save so the parent app shows the same. '
+                  'If the child really came, tap P.',
+              style: const TextStyle(
+                fontSize: 11.5,
+                height: 1.35,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFF5B4A97),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  int get notMarked => _view.where((s) => s.status == null).length;
+
+  int get total => _view.length;
 
   @override
   void initState() {
@@ -94,11 +185,37 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
     for (final c in app.students) {
       final st = old[c.id] ?? _Student(c.id, c.name);
-      if (!st.touched && st.status == null) {
+      // Teacher ने या session मध्ये स्वतः काही ठरवलेलं नसेल तरच आपोआप स्थिती ठरवतो.
+      // बदल: आधी फक्त (status == null || leaveAuto) असेल तेव्हाच ठरवत होतो, त्यामुळे
+      // आधी save झालेला 'Present' नंतर मंजूर झालेल्या रजेवर कधीच जिंकत नव्हता.
+      if (!st.touched) {
         final saved = app.attendanceStatuses[c.id];
-        if (saved != null && saved.isNotEmpty) {
+        final savedReason = app.attendanceReasons[c.id];
+        final hasSaved = saved != null && saved.isNotEmpty;
+        final leave = _approvedLeaveOn(c.id, _dateOnly(DateTime.now()));
+
+        // आधी save केलेला Present / Late, पण आज रजा मंजूर आहे आणि Teacher ने
+        // "रजा असूनही आला" असं स्वतः ठरवलेलं नाही -> हा mismatch आहे.
+        final presentButOnLeave = hasSaved &&
+            (saved == _kPresent || saved == _kLate) &&
+            leave != null &&
+            savedReason != _kCameOnLeave;
+
+        if (presentButOnLeave || (!hasSaved && leave != null)) {
+          // 1) मंजूर रजा -> Absent (कारण: Approved leave).
+          st.status = _kAbsent;
+          st.reason = 'Approved leave';
+          st.leaveAuto = true;
+        } else if (hasSaved) {
+          // 2) आज आधीच save केलेला attendance (रजेशी विसंगत नसेल तर).
           st.status = saved;
-          st.reason = app.attendanceReasons[c.id];
+          st.reason = savedReason;
+          st.leaveAuto = false;
+        } else if (st.leaveAuto) {
+          // 3) रजा नंतर रद्द / नाकारली गेली -> आपोआप केलेली खूण काढतो.
+          st.status = null;
+          st.reason = null;
+          st.leaveAuto = false;
         }
       }
       next.add(st);
@@ -111,7 +228,242 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
   void _sync() {
     if (!mounted) return;
-    setState(_rebuildStudents);
+    setState(() {
+      _rebuildStudents();
+      if (!_isToday) _rebuildPast();
+    });
+  }
+
+  // ---------------------------------------------------------------
+  // AI SCAN (नवीन)
+  // ---------------------------------------------------------------
+
+  /// >>> AI FACE MATCH — हा एकच जोडण्याचा बिंदू (hook) <<<
+  ///
+  /// वर्गाचा फोटो (JPEG bytes) आणि मुलांची list दिली की, प्रत्येक मुलासाठी
+  /// ओळखीची खात्री (0.0 – 1.0) असलेला Map परत द्यायचा: { studentId: confidence }.
+  /// ज्या मुलाचा फोटोत चेहरा सापडला नाही ते Map मध्ये नसावं.
+  ///
+  /// `null` परत केलं तर याचा अर्थ "AI engine जोडलेलं नाही" — कोणालाही mark होत नाही.
+  /// सध्या project मध्ये face-recognition package आणि मुलांचे reference face
+  /// photos नाहीत, म्हणून हे `null` देतं.
+  Future<Map<String, double>?> _matchFaces(
+      Uint8List classPhoto, List<_Student> kids) async {
+    // Admin ने ठेवलेले reference face photos (AppState.students मधून) गोळा करतो.
+    final ids = kids.map((k) => k.id).toSet();
+    final refs = <String, String>{
+      for (final c in AppState.instance.students)
+        if (ids.contains(c.id) && c.facePhoto.isNotEmpty) c.id: c.facePhoto,
+    };
+    return FaceMatchService.instance.match(classPhoto, refs);
+  }
+
+  Future<void> _scanClass() async {
+    if (_scanning) return;
+
+    if (students.isEmpty) {
+      _snack('Add students first (tap the + icon at the top).');
+      return;
+    }
+
+    XFile? shot;
+    try {
+      shot = await ImagePicker().pickImage(
+        source: ImageSource.camera,
+        maxWidth: 1600,
+        imageQuality: 85,
+      );
+    } catch (e) {
+      if (!mounted) return;
+      _snack('Could not open camera: $e');
+      return;
+    }
+    if (shot == null || !mounted) return;
+
+    setState(() => _scanning = true);
+
+    try {
+      final bytes = await shot.readAsBytes();
+      final result = await _matchFaces(bytes, List<_Student>.of(students));
+      if (!mounted) return;
+
+      if (result == null) {
+        setState(() => _scanning = false);
+        _snack('AI face matching is not connected yet, so nobody was marked. '
+            'Please mark attendance manually.');
+        return;
+      }
+
+      var sure = 0;
+      var unsure = 0;
+      var unseen = 0;
+
+      setState(() {
+        for (final st in students) {
+          // Teacher ने आधीच mark केलेलं बदलत नाही.
+          if (st.status != null) continue;
+
+          final c = result[st.id];
+          if (c != null && c >= _aiSure) {
+            st.status = _kPresent;
+            st.touched = true;
+            st.aiState = 1;
+            st.aiConfidence = c;
+            sure++;
+          } else if (c != null && c >= _aiMaybe) {
+            st.aiState = 2;
+            st.aiConfidence = c;
+            unsure++;
+          } else {
+            st.aiState = 3;
+            st.aiConfidence = null;
+            unseen++;
+          }
+        }
+        _scanning = false;
+        selectedFilter = 0;
+      });
+
+      _snack('AI marked $sure present'
+          '${unsure > 0 ? ', $unsure unsure' : ''}'
+          '${unseen > 0 ? ', $unseen not seen' : ''}. '
+          'Check and tap Save.');
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _scanning = false);
+      _snack('Scan failed: $e');
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // PAST ATTENDANCE (नवीन)
+  // ---------------------------------------------------------------
+  void _rebuildPast() {
+    _pastStudents.clear();
+    for (final c in AppState.instance.students) {
+      final st = _Student(c.id, c.name)
+        ..status = _pastStatus[c.id]
+        ..reason = _pastReason[c.id];
+      // नवीन: त्या दिवसाचा save केलेला record नसेल, पण त्या दिवशी रजा मंजूर
+      // होती, तर Absent (Approved leave) दाखवतो. (फक्त पाहण्यासाठी)
+      if ((st.status == null || st.status!.isEmpty) &&
+          _pastLoaded &&
+          _approvedLeaveOn(c.id, _selectedDay) != null) {
+        st.status = _kAbsent;
+        st.reason = 'Approved leave';
+        st.leaveAuto = true;
+      }
+      _pastStudents.add(st);
+    }
+  }
+
+  /// नवीन: या मुलाची दिलेल्या दिवसाची मंजूर (approved) रजा, नसेल तर null.
+  /// (AppState.approvedLeaveToday फक्त आजसाठी आहे, म्हणून कोणत्याही दिवसासाठी
+  /// इथे स्वतंत्र तपासणी केली आहे.)
+  LeaveRequest? _approvedLeaveOn(String studentId, DateTime day) {
+    final d = _dateOnly(day);
+    for (final l in AppState.instance.leaves) {
+      if (l.studentId != studentId || !l.isApproved) continue;
+      final from = _dateOnly(l.fromDate);
+      final to = _dateOnly(l.toDate);
+      if (!d.isBefore(from) && !d.isAfter(to)) return l;
+    }
+    return null;
+  }
+
+  void _goToDay(DateTime day) {
+    final d = _dateOnly(day);
+    if (d.isAfter(_dateOnly(DateTime.now()))) return; // भविष्यातला दिवस नाही
+    if (d == _selectedDay) return;
+
+    setState(() {
+      _selectedDay = d;
+      selectedFilter = 0;
+    });
+
+    if (_isToday) {
+      // आज: नेहमीची live list (AppState मधून), काही load करावं लागत नाही.
+      _loadToken++; // चालू असलेला जुना load रद्द
+      setState(() {
+        _loadingPast = false;
+        _pastError = null;
+        _pastLoaded = false;
+      });
+    } else {
+      _loadPast();
+    }
+  }
+
+  Future<void> _pickDay() async {
+    final now = DateTime.now();
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _selectedDay,
+      firstDate: DateTime(now.year - 1, now.month, now.day),
+      lastDate: _dateOnly(now),
+      helpText: 'Select attendance date',
+    );
+    if (picked != null) _goToDay(picked);
+  }
+
+  Future<void> _loadPast() async {
+    final token = ++_loadToken;
+    setState(() {
+      _loadingPast = true;
+      _pastError = null;
+      _pastLoaded = false;
+    });
+
+    try {
+      // classId + day (दोन्ही equality) — वेगळा index लागत नाही;
+      // Rules: Teacher फक्त आपल्या class चा attendance वाचू शकतो.
+      final snap = await FirebaseFirestore.instance
+          .collection('attendance')
+          .where('classId', isEqualTo: AppState.instance.classId)
+          .where('day', isEqualTo: AppState.dayKey(_selectedDay))
+          .get();
+
+      if (!mounted || token != _loadToken) return;
+
+      final st = <String, String>{};
+      final rs = <String, String>{};
+      for (final d in snap.docs) {
+        final m = d.data();
+        final sid = (m['studentId'] ?? '') as String;
+        final status = (m['status'] ?? '') as String;
+        if (sid.isEmpty || status.isEmpty) continue;
+        st[sid] = status;
+        final reason = (m['reason'] ?? '') as String;
+        if (reason.isNotEmpty) rs[sid] = reason;
+      }
+
+      setState(() {
+        _pastStatus = st;
+        _pastReason = rs;
+        _loadingPast = false;
+        _pastLoaded = true;
+        _rebuildPast();
+      });
+    } catch (e) {
+      if (!mounted || token != _loadToken) return;
+      setState(() {
+        _pastStatus = {};
+        _pastReason = {};
+        _loadingPast = false;
+        _pastLoaded = false;
+        _pastError = '$e';
+        _rebuildPast();
+      });
+    }
+  }
+
+  String _dayLabel(DateTime d) {
+    final today = _dateOnly(DateTime.now());
+    final yesterday = today.subtract(const Duration(days: 1));
+    final base = AppState.dateLabel(d);
+    if (d == today) return 'Today · $base';
+    if (d == yesterday) return 'Yesterday · $base';
+    return '$base ${d.year}';
   }
 
   // ---------------------------------------------------------------
@@ -121,18 +473,25 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     HapticFeedback.selectionClick();
     setState(() {
       student.touched = true;
+      student.leaveAuto = false; // आता Teacher ने स्वतः ठरवलं
+      student.aiState = 0; // Teacher ने स्वतः ठरवलं — AI ची खूण काढतो
+      student.aiConfidence = null;
       // Tap the same button again to un-mark.
       if (student.status == status) {
         student.status = null;
       } else {
         student.status = status;
       }
+      final onLeave = AppState.instance.approvedLeaveToday(student.id) != null;
       if (student.status != _kAbsent) student.reason = null;
       // नवीन: मंजूर रजा असेल तर Absent चं कारण आपोआप भरतो.
-      if (student.status == _kAbsent &&
-          student.reason == null &&
-          AppState.instance.approvedLeaveToday(student.id) != null) {
+      if (student.status == _kAbsent && student.reason == null && onLeave) {
         student.reason = 'Approved leave';
+      }
+      // नवीन: मंजूर रजा असूनही Teacher ने Present / Late केलं -> तसा शेरा ठेवतो,
+      // म्हणजे हा निर्णय जाणूनबुजून आहे हे कळतं (आणि पुन्हा आपोआप Absent होत नाही).
+      if ((student.status == _kPresent || student.status == _kLate) && onLeave) {
+        student.reason = _kCameOnLeave;
       }
     });
   }
@@ -213,6 +572,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     if (picked == null) return;
     setState(() {
       student.touched = true;
+      student.leaveAuto = false;
       student.reason = picked.isEmpty ? null : picked;
     });
   }
@@ -316,7 +676,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   // FILTERING
   // ---------------------------------------------------------------
   List<_Student> get visibleStudents {
-    return students.where((student) {
+    return _view.where((student) {
       final matchesSearch =
       student.name.toLowerCase().contains(searchQuery.toLowerCase());
 
@@ -360,7 +720,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       appBar: buildPageAppBar(
         title: 'Attendance',
         subtitle:
-        '${AppState.instance.className} · ${AppState.dateLabel(DateTime.now())}',
+        '${AppState.instance.className} · ${AppState.dateLabel(_selectedDay)}',
         onBack: widget.onBack,
         actions: [
           IconButton(
@@ -376,6 +736,20 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
             child: ListView(
               padding: const EdgeInsets.fromLTRB(16, 10, 16, 16),
               children: [
+                // नवीन: तारीख निवडा (Today / Yesterday / कोणतीही तारीख)
+                _buildDayBar(),
+                ..._buildPastNotices(),
+                const SizedBox(height: 12),
+
+                // नवीन: रजा मंजूर आणि Present असा mismatch असेल तर सूचना.
+                if (_isToday) _buildLeaveFixNotice(),
+
+                // नवीन: Scan class with camera (फक्त आजच्या दिवशी)
+                if (_isToday) ...[
+                  _buildScanCard(),
+                  const SizedBox(height: 12),
+                ],
+
                 // SMALL SUMMARY CARDS
                 Row(
                   children: [
@@ -401,7 +775,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                     const SizedBox(width: 8),
                     Expanded(
                       child: _summaryCard(
-                        'Pending',
+                        _isToday ? 'Pending' : 'Not marked',
                         notMarked,
                         orange,
                         const Color(0xFFFFF4E4),
@@ -427,7 +801,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                       _filterChip('Present', 1, present),
                       _filterChip('Absent', 2, absent),
                       _filterChip('Late', 3, lateCount),
-                      _filterChip('Pending', 4, notMarked),
+                      _filterChip(_isToday ? 'Pending' : 'Not marked', 4, notMarked),
                     ],
                   ),
                 ),
@@ -523,7 +897,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                 const SizedBox(height: 16),
 
                 // SAVE SECTION (appears after the last student)
-                _buildSaveSection(),
+                // मागचा दिवस पाहताना Save नाही, फक्त summary.
+                if (_isToday) _buildSaveSection() else _buildPastSummary(),
               ],
             ),
           ),
@@ -631,6 +1006,321 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------
+  // नवीन WIDGETS: तारीख bar, मागच्या दिवसाचे notices, badge, summary
+  // ---------------------------------------------------------------
+  Widget _buildDayBar() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          decoration: _cardDecoration(),
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+          child: Row(
+            children: [
+              IconButton(
+                tooltip: 'Previous day',
+                onPressed: () =>
+                    _goToDay(_selectedDay.subtract(const Duration(days: 1))),
+                icon: const Icon(Icons.chevron_left_rounded, color: primary),
+              ),
+              Expanded(
+                child: InkWell(
+                  onTap: _pickDay,
+                  borderRadius: BorderRadius.circular(12),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Icon(Icons.calendar_month_rounded,
+                            size: 17, color: primary),
+                        const SizedBox(width: 7),
+                        Flexible(
+                          child: Text(
+                            _dayLabel(_selectedDay),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w800,
+                              color: dark,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              IconButton(
+                tooltip: 'Next day',
+                onPressed: _isToday
+                    ? null
+                    : () => _goToDay(_selectedDay.add(const Duration(days: 1))),
+                icon: Icon(
+                  Icons.chevron_right_rounded,
+                  color: _isToday ? const Color(0xFFC9D3CF) : primary,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  List<Widget> _buildPastNotices() {
+    if (_isToday) return const [];
+
+    final widgets = <Widget>[const SizedBox(height: 10)];
+
+    widgets.add(
+      Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+        decoration: BoxDecoration(
+          color: const Color(0xFFEAF2FF),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: const Row(
+          children: [
+            Icon(Icons.visibility_rounded, size: 16, color: Color(0xFF4786C7)),
+            SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Viewing past attendance (view only). '
+                    'Tap Absent to see who was absent.',
+                style: TextStyle(
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFF4786C7),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (_loadingPast) {
+      widgets.add(const SizedBox(height: 8));
+      widgets.add(
+        ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: const LinearProgressIndicator(minHeight: 3, color: primary),
+        ),
+      );
+    } else if (_pastError != null) {
+      widgets.add(const SizedBox(height: 8));
+      widgets.add(
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+          decoration: BoxDecoration(
+            color: const Color(0xFFFFEFED),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Row(
+            children: [
+              const Icon(Icons.error_outline_rounded, size: 16, color: red),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Could not load attendance: $_pastError',
+                  style: const TextStyle(
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.w700,
+                    color: red,
+                  ),
+                ),
+              ),
+              TextButton(onPressed: _loadPast, child: const Text('Retry')),
+            ],
+          ),
+        ),
+      );
+    } else if (_pastLoaded && _pastStatus.isEmpty) {
+      widgets.add(const SizedBox(height: 8));
+      widgets.add(
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+          decoration: BoxDecoration(
+            color: const Color(0xFFFFF4E4),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: const Row(
+            children: [
+              Icon(Icons.info_outline_rounded, size: 16, color: orange),
+              SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'No attendance was saved for this day.',
+                  style: TextStyle(
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.w700,
+                    color: orange,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return widgets;
+  }
+
+  // मागच्या दिवसाची स्थिती दाखवणारा लहान badge (बटणांऐवजी, tap होत नाही)
+  Widget _pastBadge(_Student s) {
+    String text;
+    Color color;
+    if (s.status == _kPresent) {
+      text = 'Present';
+      color = green;
+    } else if (s.status == _kAbsent) {
+      text = 'Absent';
+      color = red;
+    } else if (s.status == _kLate) {
+      text = 'Late';
+      color = orange;
+    } else {
+      text = '—';
+      color = muted;
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          fontSize: 10.5,
+          fontWeight: FontWeight.w800,
+          color: color,
+        ),
+      ),
+    );
+  }
+
+  // मागचा दिवस पाहताना Save button ऐवजी फक्त summary
+  Widget _buildPastSummary() {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: _cardDecoration(),
+      child: Row(
+        children: [
+          Container(
+            height: 38,
+            width: 38,
+            decoration: BoxDecoration(
+              color: const Color(0xFFEAF2FF),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: const Icon(Icons.history_rounded,
+                color: Color(0xFF4786C7), size: 21),
+          ),
+          const SizedBox(width: 11),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '$present / $total present · $absent absent',
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w900,
+                    color: dark,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  AppState.dateLabel(_selectedDay),
+                  style: const TextStyle(
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.w700,
+                    color: muted,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildScanCard() {
+    const accent = Color(0xFF7C5CFC);
+
+    return Material(
+      color: const Color(0xFFEFEBFF),
+      borderRadius: BorderRadius.circular(18),
+      child: InkWell(
+        onTap: _scanning ? null : _scanClass,
+        borderRadius: BorderRadius.circular(18),
+        child: Container(
+          padding: const EdgeInsets.all(13),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: const Color(0xFFD9D0F7)),
+          ),
+          child: Row(
+            children: [
+              Container(
+                height: 44,
+                width: 44,
+                decoration: const BoxDecoration(
+                  color: accent,
+                  shape: BoxShape.circle,
+                ),
+                child: _scanning
+                    ? const Padding(
+                  padding: EdgeInsets.all(12),
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2.2,
+                    color: Colors.white,
+                  ),
+                )
+                    : const Icon(Icons.crop_free_rounded,
+                    color: Colors.white, size: 22),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      _scanning
+                          ? 'Scanning class photo...'
+                          : 'Scan class with camera',
+                      style: const TextStyle(
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.w800,
+                        color: dark,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    const Text(
+                      'AI marks present children. You check and save.',
+                      style: TextStyle(
+                        fontSize: 10.5,
+                        fontWeight: FontWeight.w600,
+                        color: Color(0xFF7A6FA8),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -781,7 +1471,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     final isAbsent = student.status == _kAbsent;
     final isLate = student.status == _kLate;
 
-    String subtitle = 'Not marked';
+    String subtitle = _isToday ? 'Not marked' : 'No record';
     Color subtitleColor = const Color(0xFF98A49F);
     Color ring = const Color(0xFFE4F3EF);
     Color avatarText = primary;
@@ -790,6 +1480,11 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       subtitle = 'Present';
       subtitleColor = green;
       ring = green;
+      // नवीन: मंजूर रजा असूनही Present केलेलं — वेगळं दिसावं.
+      if (student.reason == _kCameOnLeave) {
+        subtitle = 'Present · Came despite leave';
+        subtitleColor = const Color(0xFF8066C8);
+      }
     } else if (isLate) {
       subtitle = 'Late arrival';
       subtitleColor = orange;
@@ -797,13 +1492,31 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     } else if (isAbsent) {
       subtitle = student.reason != null
           ? 'Absent · ${student.reason}'
-          : 'Absent · Add reason';
+          : (_isToday ? 'Absent · Add reason' : 'Absent');
       subtitleColor = red;
       ring = red;
-    } else if (AppState.instance.approvedLeaveToday(student.id) != null) {
+      // नवीन: मंजूर रजेमुळे आपोआप Absent — वेगळ्या रंगात, म्हणजे ओळखू येतं.
+      if (student.leaveAuto) {
+        subtitle = 'Absent · On approved leave';
+        subtitleColor = const Color(0xFF8066C8);
+      }
+    } else if (_isToday &&
+        AppState.instance.approvedLeaveToday(student.id) != null) {
       // नवीन: Parent ची रजा मंजूर आहे — Teacher ला आधीच कळतं.
       subtitle = 'On approved leave today';
       subtitleColor = const Color(0xFF8066C8);
+    }
+
+    // नवीन: AI scan नंतरच्या खुणा (फक्त आजच्या दिवशी)
+    if (_isToday) {
+      if (isPresent && student.aiState == 1 && student.aiConfidence != null) {
+        subtitle = 'AI ${(student.aiConfidence! * 100).round()}%';
+      } else if (student.status == null && student.aiState == 2) {
+        subtitle = 'AI unsure — tap P or A';
+        subtitleColor = orange;
+      } else if (student.status == null && student.aiState == 3) {
+        subtitle = 'Not seen';
+      }
     }
 
     if (student.status == null) avatarText = primary;
@@ -864,7 +1577,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                   const SizedBox(height: 4),
                   GestureDetector(
                     behavior: HitTestBehavior.opaque,
-                    onTap: isAbsent ? () => _pickReason(student) : null,
+                    onTap: (_isToday && isAbsent) ? () => _pickReason(student) : null,
                     child: Text(
                       subtitle,
                       maxLines: 1,
@@ -873,7 +1586,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                         fontSize: 9.5,
                         color: subtitleColor,
                         fontWeight: FontWeight.w700,
-                        decoration: isAbsent && student.reason == null
+                        decoration: _isToday && isAbsent && student.reason == null
                             ? TextDecoration.underline
                             : null,
                         decorationColor: subtitleColor,
@@ -884,14 +1597,17 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
               ),
             ),
             const SizedBox(width: 6),
-            _statusButton('P', isPresent, green,
-                    () => markStudent(student, _kPresent)),
-            const SizedBox(width: 6),
-            _statusButton(
-                'A', isAbsent, red, () => markStudent(student, _kAbsent)),
-            const SizedBox(width: 6),
-            _statusButton(
-                'L', isLate, orange, () => markStudent(student, _kLate)),
+            if (_isToday) ...[
+              _statusButton('P', isPresent, green,
+                      () => markStudent(student, _kPresent)),
+              const SizedBox(width: 6),
+              _statusButton(
+                  'A', isAbsent, red, () => markStudent(student, _kAbsent)),
+              const SizedBox(width: 6),
+              _statusButton(
+                  'L', isLate, orange, () => markStudent(student, _kLate)),
+            ] else
+              _pastBadge(student),
           ],
         ),
       ),
@@ -917,7 +1633,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
-      builder: (_) => _AddStudentSheet(nextRoll: students.length + 1),
+      builder: (_) => AddStudentSheet(nextRoll: students.length + 1),
     );
     if (child == null || !mounted) return;
 
@@ -1020,7 +1736,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
       builder: (_) =>
-          _AddStudentSheet(nextRoll: previous.rollNo, existing: previous),
+          AddStudentSheet(nextRoll: previous.rollNo, existing: previous),
     );
     if (updated == null || !mounted) return;
 
@@ -1177,8 +1893,8 @@ class _LegendDot extends StatelessWidget {
 // =====================================================================
 // ADD STUDENT SHEET
 // =====================================================================
-class _AddStudentSheet extends StatefulWidget {
-  const _AddStudentSheet({required this.nextRoll, this.existing});
+class AddStudentSheet extends StatefulWidget {
+  const AddStudentSheet({required this.nextRoll, this.existing});
 
   final int nextRoll;
 
@@ -1186,10 +1902,10 @@ class _AddStudentSheet extends StatefulWidget {
   final ChildInfo? existing;
 
   @override
-  State<_AddStudentSheet> createState() => _AddStudentSheetState();
+  State<AddStudentSheet> createState() => _AddStudentSheetState();
 }
 
-class _AddStudentSheetState extends State<_AddStudentSheet> {
+class _AddStudentSheetState extends State<AddStudentSheet> {
   static const Color dark = Color(0xFF183B45);
   static const Color primary = Color(0xFF168C80);
   static const Color muted = Color(0xFF84918D);

@@ -14,8 +14,7 @@ import 'parent_home_screen.dart' show ParentColors;
 /// Teacher app च्या ChatScreen शी एकच thread share करतो (AppState.thread).
 ///
 /// Features:
-///  - Back arrow (same as the other screens) + teacher info button
-///  - Dismissible "reply hours" banner
+///  - Back arrow (same as the other screens)
 ///  - Blue sent bubbles with double-tick, white received bubbles
 ///  - Long-press a message to copy it
 ///  - Quick reply chips (tap to fill the message box)
@@ -49,7 +48,6 @@ class _ParentMessageScreenState extends State<ParentMessageScreen> {
   final _scroll = ScrollController();
   final _focus = FocusNode();
 
-  bool _showBanner = true;
   bool _showJump = false;
   int _lastCount = 0;
 
@@ -243,7 +241,6 @@ class _ParentMessageScreenState extends State<ParentMessageScreen> {
         child: Column(
           children: [
             _header(s),
-            if (_showBanner) _banner(),
             Expanded(
               child: AnimatedBuilder(
                 animation: s,
@@ -327,7 +324,7 @@ class _ParentMessageScreenState extends State<ParentMessageScreen> {
     );
   }
 
-  // ---------- header (back arrow + teacher + info) ----------
+  // ---------- header (back arrow + teacher) ----------
   Widget _roundBtn(IconData icon, VoidCallback? onTap, {String? tooltip}) {
     final enabled = onTap != null;
     final btn = GestureDetector(
@@ -425,50 +422,6 @@ class _ParentMessageScreenState extends State<ParentMessageScreen> {
                   ),
                 ),
               ],
-            ),
-          ),
-          _roundBtn(
-            Icons.info_outline_rounded,
-                () => setState(() => _showBanner = !_showBanner),
-            tooltip: 'Reply hours',
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _banner() {
-    return Container(
-      width: double.infinity,
-      margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-      padding: const EdgeInsets.fromLTRB(12, 9, 6, 9),
-      decoration: BoxDecoration(
-        color: ParentColors.tint,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: ParentColors.border),
-      ),
-      child: Row(
-        children: [
-          const Icon(Icons.schedule_rounded,
-              size: 17, color: ParentColors.primary),
-          const SizedBox(width: 8),
-          const Expanded(
-            child: Text(
-              'Teacher replies between 12:00 and 3:00 PM on school days.',
-              style: TextStyle(
-                  fontSize: 11.5,
-                  height: 1.35,
-                  fontWeight: FontWeight.w600,
-                  color: ParentColors.dark),
-            ),
-          ),
-          GestureDetector(
-            onTap: () => setState(() => _showBanner = false),
-            behavior: HitTestBehavior.opaque,
-            child: const Padding(
-              padding: EdgeInsets.all(6),
-              child: Icon(Icons.close_rounded,
-                  size: 16, color: ParentColors.muted),
             ),
           ),
         ],

@@ -224,6 +224,7 @@ class ChildInfo {
     required this.pickupNote,
     this.parentEmail = '',
     this.classId = '',
+    this.facePhoto = '',
   });
 
   /// Firestore load होण्यापूर्वी (किंवा parent link नसताना) वापरला जाणारा रिकामा child.
@@ -254,6 +255,7 @@ class ChildInfo {
       parentName: (d['parentName'] ?? '') as String,
       parentEmail: (d['parentEmail'] ?? '') as String,
       classId: (d['classId'] ?? '') as String,
+      facePhoto: (d['facePhoto'] ?? '') as String,
       pickupNote: (d['pickupNote'] ?? '') as String,
       contacts: [
         for (final c in rawContacts)
@@ -279,6 +281,9 @@ class ChildInfo {
     'classId': classId,
     'pickupNote': pickupNote,
     'contacts': [for (final c in contacts) c.toMap()],
+    // नवीन: AI attendance scan साठी मुलाचा एक चेहऱ्याचा फोटो (base64).
+    // रिकामा असेल तर पाठवत नाही, म्हणजे Teacher ने edit केल्यावर तो पुसला जात नाही.
+    if (facePhoto.isNotEmpty) 'facePhoto': facePhoto,
   };
 
   final String id;
@@ -294,6 +299,9 @@ class ChildInfo {
   final String classId;
   final List<ParentContact> contacts;
   final String pickupNote;
+
+  /// 'data:image/jpeg;base64,...' — AI scan साठी reference face photo (नसेल तर '').
+  final String facePhoto;
 
   String get firstName => name.split(' ').first;
   String get parentFirstName => parentName.split(' ').first;

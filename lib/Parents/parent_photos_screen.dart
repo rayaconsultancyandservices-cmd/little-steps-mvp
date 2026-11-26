@@ -59,7 +59,6 @@ class ParentPhotosScreen extends StatefulWidget {
 class _ParentPhotosScreenState extends State<ParentPhotosScreen> {
   int _tab = 0; // 0 = My child, 1 = Class photos
   int _range = 0; // 0 All, 1 Today, 2 This week, 3 Favourites
-  bool _mosaic = true; // big first photo + grid  /  plain grid
 
   final ValueNotifier<Set<String>> _favs = ValueNotifier<Set<String>>({});
 
@@ -207,7 +206,7 @@ class _ParentPhotosScreenState extends State<ParentPhotosScreen> {
   }
 
   // ---------------------------------------------------------------
-  // HEADER (back arrow + title + layout toggle)
+  // HEADER (back arrow + title)
   // ---------------------------------------------------------------
   Widget _roundBtn(IconData icon, VoidCallback onTap, {String? tooltip}) {
     final btn = GestureDetector(
@@ -271,11 +270,6 @@ class _ParentPhotosScreenState extends State<ParentPhotosScreen> {
                 ),
               ],
             ),
-          ),
-          _roundBtn(
-            _mosaic ? Icons.grid_view_rounded : Icons.dashboard_rounded,
-                () => setState(() => _mosaic = !_mosaic),
-            tooltip: _mosaic ? 'Grid view' : 'Highlight view',
           ),
         ],
       ),
@@ -610,31 +604,35 @@ class _ParentPhotosScreenState extends State<ParentPhotosScreen> {
       );
     }
 
+    // बदल: मोठा 'hero' फोटो काढला. सगळे फोटो सारख्या आकाराचे, एका ओळीत 2-2.
+    // Wrap ऐवजी Row + Expanded वापरलं, म्हणजे दोन फोटो नेहमी एका ओळीत बसतात
+    // (Wrap मध्ये decimal rounding मुळे दुसरा फोटो खाली जाऊ शकत होता).
+    // फोटो विषम संख्येत असेल तर शेवटचा फोटो डाव्या बाजूला अर्ध्या रुंदीत राहतो.
+    const gap = 8.0;
+    const aspect = 1.15;
     final items = g.items;
-    final useHero = _mosaic && items.length >= 3;
-    final rest = useHero ? items.sublist(1) : items;
+    final rows = <Widget>[];
+
+    for (var i = 0; i < items.length; i += 2) {
+      final hasSecond = i + 1 < items.length;
+      if (rows.isNotEmpty) rows.add(const SizedBox(height: gap));
+      rows.add(
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(child: tile(items[i], aspect)),
+            const SizedBox(width: gap),
+            Expanded(
+              child: hasSecond ? tile(items[i + 1], aspect) : const SizedBox(),
+            ),
+          ],
+        ),
+      );
+    }
 
     return Column(
-      children: [
-        if (useHero) ...[
-          tile(items.first, 1.7),
-          const SizedBox(height: 8),
-        ],
-        LayoutBuilder(
-          builder: (context, c) {
-            const gap = 8.0;
-            final w = (c.maxWidth - gap) / 2;
-            return Wrap(
-              spacing: gap,
-              runSpacing: gap,
-              children: [
-                for (final it in rest)
-                  SizedBox(width: w, child: tile(it, 1.15)),
-              ],
-            );
-          },
-        ),
-      ],
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: rows,
     );
   }
 
@@ -1025,7 +1023,12 @@ class _PhotoViewerState extends State<_PhotoViewer> {
   late int _index;
   bool _saving = false;
 
-  /// नवीन: Photo फोनच्या gallery मध्ये save करतो ("Little Steps" album).
+  /// Photo फोनच्या gallery मध्ये save करतो ("Little Steps" album).
+  ///
+  /// बदल: Teacher चे photos 'data:image/jpeg;base64,...' स्वरूपात असतात
+  /// (http link नाही). आधी त्यावर HttpClient चालवत होतो, म्हणून नेहमी error
+  /// यायचा. आता 'data:' असेल तर थेट base64 decode करतो; http link असेल तरच
+  /// download करतो.
   Future<void> _save(_Entry e) async {
     if (_saving) return;
     final url = e.item.photo.url;
@@ -1034,25 +1037,47 @@ class _PhotoViewerState extends State<_PhotoViewer> {
       return;
     }
     setState(() => _saving = true);
-    final client = HttpClient();
+    HttpClient? client;
     try {
-      final req = await client.getUrl(Uri.parse(url));
-      final res = await req.close();
-      if (res.statusCode != 200) {
-        throw HttpException('HTTP ${res.statusCode}');
+      Uint8List bytes;
+      if (url.startsWith('data:')) {
+        bytes = UriData.parse(url).contentAsBytes();
+      } else {
+        client = HttpClient();
+        final req = await client.getUrl(Uri.parse(url));
+        final res = await req.close();
+        if (res.statusCode != 200) {
+          throw HttpException('HTTP ${res.statusCode}');
+        }
+        bytes = await consolidateHttpClientResponseBytes(res);
       }
-      final bytes = await consolidateHttpClientResponseBytes(res);
+      if (bytes.isEmpty) throw const FormatException('Empty image');
+
+      // Gal.putImageBytes स्वतः gallery ची परवानगी मागतो (म्हणून hasAccess /
+      // requestAccess इथे वापरले नाहीत — ते तुमच्या gal version मध्ये नाहीत).
       await Gal.putImageBytes(bytes, album: 'Little Steps');
       if (mounted) showSnack(context, 'Saved to gallery.');
-    } catch (_) {
-      // Gal.putImageBytes स्वतः gallery ची परवानगी मागतो; नाकारली तर किंवा
-      // network अडचण आली तर इथे येतो.
+    } on GalException catch (err) {
+      // enum चं नाव string म्हणून तपासतो, म्हणजे gal च्या कोणत्याही version मध्ये चालतं.
+      final kind = err.type.name.toLowerCase();
       if (mounted) {
-        showSnack(context,
-            'Could not save. Allow photo access and check your internet.');
+        showSnack(
+          context,
+          kind.contains('access')
+              ? 'Photo access is off. Please allow it in Settings to save photos.'
+              : kind.contains('space')
+              ? 'Not enough storage space on your phone.'
+              : 'Could not save this photo to the gallery.',
+        );
       }
+    } on HttpException {
+      if (mounted) {
+        showSnack(context, 'Could not download the photo. Check your internet.');
+      }
+    } catch (_) {
+      if (mounted) showSnack(context, 'Could not save this photo.');
     } finally {
-      client.close();
+      client?.close();
       if (mounted) setState(() => _saving = false);
     }
   }

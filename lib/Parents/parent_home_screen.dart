@@ -1,10 +1,13 @@
+import 'dart:async';
+import 'dart:typed_data';
+
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
 import '../state/app_state.dart';
 import '../widgets/parent_widgets.dart';
 import 'parent_attendance_screen.dart';
 import 'parent_calendar_screen.dart';
-import 'parent_child_profile_screen.dart';
 import 'parent_leave_screen.dart';
 import 'parent_message_screen.dart';
 import 'parent_notification_screen.dart';
@@ -61,6 +64,29 @@ class ParentPageBackground extends StatelessWidget {
   }
 }
 
+/// नवीन: School ने दिलेला payment चा निकाल (verified / rejected) — notification साठी.
+class _PayResult {
+  const _PayResult({
+    required this.id,
+    required this.title,
+    required this.amount,
+    required this.status,
+    required this.note,
+    required this.at,
+  });
+
+  final String id;
+  final String title;
+  final int amount;
+
+  /// verified | rejected
+  final String status;
+  final String note;
+  final DateTime at;
+
+  bool get verified => status == 'verified';
+}
+
 /// P1 · Parent Home (light-blue redesign)
 class ParentHomeScreen extends StatefulWidget {
   const ParentHomeScreen({
@@ -91,12 +117,61 @@ class _ParentHomeScreenState extends State<ParentHomeScreen>
       animationBehavior: AnimationBehavior.preserve,
     )..forward();
     _loadNotifs();
+    _startPayWatch();
   }
 
   @override
   void dispose() {
+    _paySub?.cancel();
     _intro.dispose();
     super.dispose();
+  }
+
+  // ---------------------------------------------------------------
+  // नवीन: payment request चा निकाल (Teacher / Admin ने Verify किंवा Reject केल्यावर)
+  // ---------------------------------------------------------------
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _paySub;
+  String _payChildId = '';
+  List<_PayResult> _payResults = [];
+
+  void _startPayWatch() {
+    final id = AppState.instance.child.id;
+    if (id.isEmpty || id == _payChildId) return;
+    _paySub?.cancel();
+    _payChildId = id;
+    _paySub = FirebaseFirestore.instance
+        .collection('students')
+        .doc(id)
+        .collection('payments')
+        .snapshots()
+        .listen(
+          (snap) {
+        final list = <_PayResult>[];
+        for (final d in snap.docs) {
+          final x = d.data();
+          final st = (x['status'] ?? '').toString();
+          if (st != 'verified' && st != 'rejected') continue;
+          final r = x['reviewedAt'];
+          final c = x['createdAt'];
+          final at = r is Timestamp
+              ? r.toDate()
+              : (c is Timestamp ? c.toDate() : DateTime.now());
+          final amt = x['amount'];
+          list.add(_PayResult(
+            id: d.id,
+            title: (x['title'] ?? '').toString(),
+            amount: amt is num ? amt.toInt() : 0,
+            status: st,
+            note: (x['note'] ?? '').toString().trim(),
+            at: at,
+          ));
+        }
+        list.sort((a, b) => b.at.compareTo(a.at));
+        if (mounted) setState(() => _payResults = list);
+      },
+      // rules / network चुकले तरी Home चालू राहतो (फक्त ही सूचना येत नाही).
+      onError: (Object _) {},
+    );
   }
 
   Future<void> _push(BuildContext context, Widget page) {
@@ -121,6 +196,11 @@ class _ParentHomeScreenState extends State<ParentHomeScreen>
       animation: AppState.instance,
       builder: (context, _) {
         final s = AppState.instance;
+        if (s.child.id.isNotEmpty && s.child.id != _payChildId) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) _startPayWatch();
+          });
+        }
         final now = DateTime.now();
         final todayPhotos = s.childPhotosOn(now);
         final post = s.diaryFor(now);
@@ -138,10 +218,8 @@ class _ParentHomeScreenState extends State<ParentHomeScreen>
 
         final sections = <Widget>[
           _header(context, s, notifs),
-          _Tap(
-            onTap: () => _push(context, const ParentAttendanceScreen()),
-            child: _heroCard(s),
-          ),
+          // बदल: Hero card आता tap करता येत नाही (Attendance आता quick-action मधून उघडतो).
+          _heroCard(s),
           _glance(s, todayPhotos.length, post != null),
           _quickActions(context, due != null, s.unreadMessages > 0),
           if (s.pendingAckCount > 0) _ackBanner(s.pendingAckCount),
@@ -243,6 +321,20 @@ class _ParentHomeScreenState extends State<ParentHomeScreen>
             : 'Leave for $range was declined.',
         6,
         key: 'leave_${l.id}_${l.status}',
+      ));
+    }
+    // नवीन: payment चा निकाल (गेल्या 30 दिवसांतले, जास्तीत जास्त 3).
+    final recent = now.subtract(const Duration(days: 30));
+    for (final p in _payResults.where((p) => p.at.isAfter(recent)).take(3)) {
+      final what = p.title.isEmpty ? '' : ' for ${p.title}';
+      out.add(ParentNotifItem(
+        p.verified ? Icons.verified_rounded : Icons.cancel_rounded,
+        p.verified
+            ? 'Your payment of ${rupees(p.amount)}$what was verified by the school.'
+            : 'Your payment request of ${rupees(p.amount)}$what could not be verified.'
+            '${p.note.isEmpty ? '' : ' School note: ${p.note}'}',
+        4,
+        key: 'pay_${p.id}_${p.status}',
       ));
     }
     return out;
@@ -903,8 +995,9 @@ class _ParentHomeScreenState extends State<ParentHomeScreen>
                 () => _push(context, const ParentMessageScreen()),
             dot: msgUnread),
         const SizedBox(width: 8),
-        item(Icons.person_rounded, 'Profile',
-                () => _push(context, const ParentChildProfileScreen())),
+        // बदल: तिसरा tab 'Profile' ऐवजी 'Attendance' (Profile bottom bar मध्ये आहेच).
+        item(Icons.how_to_reg_rounded, 'Attendance',
+                () => _push(context, const ParentAttendanceScreen())),
         const SizedBox(width: 8),
         item(Icons.currency_rupee_rounded, 'Fees', () => widget.onNavigate(4),
             dot: feeDue),
@@ -1075,19 +1168,27 @@ class _ParentHomeScreenState extends State<ParentHomeScreen>
           if (photos.isEmpty)
             _emptyNote(Icons.image_outlined, 'No photos shared today yet.')
           else
+          // बदल: नेहमी 3 जागा (slots). 1 किंवा 2 फोटो असले तरी प्रत्येक फोटो
+          // तेवढ्याच (एक-तृतीयांश रुंदीच्या) आकारात दिसतो — एकटा फोटो मोठा होत नाही.
             Row(
               children: [
-                for (var i = 0; i < photos.take(3).length; i++) ...[
+                for (var i = 0; i < 3; i++) ...[
                   if (i > 0) const SizedBox(width: 6),
                   Expanded(
-                    child: AspectRatio(
+                    child: i >= photos.length
+                        ? const SizedBox.shrink()
+                        : AspectRatio(
                       aspectRatio: 1,
                       child: Stack(
                         fit: StackFit.expand,
                         children: [
-                          PhotoTile(
-                            colorIndex: photos[i].colorIndex,
+                          // बदल: खरा फोटो दाखवतो (रंगीत box + icon नाही).
+                          GestureDetector(
                             onTap: () => widget.onNavigate(1),
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(14),
+                              child: _photoThumb(photos[i]),
+                            ),
                           ),
                           if (i == 2 && photos.length > 3)
                             IgnorePointer(
@@ -1117,6 +1218,43 @@ class _ParentHomeScreenState extends State<ParentHomeScreen>
             ),
         ],
       ),
+    );
+  }
+
+  // Teacher चा फोटो 'data:image/jpeg;base64,...' (Spark plan) किंवा http link असू शकतो.
+  // फोटो नसेल / उघडला नाही तर आधीचा रंगीत placeholder दाखवतो.
+  static final Map<String, Uint8List> _thumbCache = {};
+
+  Widget _photoThumb(SharedPhoto p) {
+    final placeholder = PhotoTile(colorIndex: p.colorIndex);
+    final u = p.url;
+    if (u == null || u.isEmpty) return placeholder;
+
+    if (u.startsWith('data:')) {
+      Uint8List? bytes = _thumbCache[u];
+      if (bytes == null) {
+        try {
+          bytes = UriData.parse(u).contentAsBytes();
+          if (_thumbCache.length > 40) _thumbCache.clear();
+          _thumbCache[u] = bytes;
+        } catch (_) {
+          return placeholder;
+        }
+      }
+      return Image.memory(
+        bytes,
+        fit: BoxFit.cover,
+        gaplessPlayback: true,
+        errorBuilder: (_, __, ___) => placeholder,
+      );
+    }
+
+    return Image.network(
+      u,
+      fit: BoxFit.cover,
+      loadingBuilder: (ctx, child, progress) =>
+      progress == null ? child : placeholder,
+      errorBuilder: (_, __, ___) => placeholder,
     );
   }
 

@@ -3,10 +3,11 @@ import 'package:flutter/services.dart';
 
 import '../state/app_state.dart';
 import 'admin_state.dart';
+import 'csv_download.dart';
 import 'admin_widgets.dart';
 
 /// Reports & Export: Admin ला school चा खरा data (Firestore मधून) Excel / Google Sheets
-/// मध्ये घेण्यासाठी CSV स्वरूपात copy करता येतो. Preview सुद्धा screen वरच दिसतो.
+/// मध्ये घेण्यासाठी CSV स्वरूपात copy किंवा खरी .csv फाइल download करता येते. Preview सुद्धा screen वरच दिसतो.
 enum _Report { students, attendance, fees, receipts, teachers, leaves }
 
 class _Sheet {
@@ -345,6 +346,24 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
     );
   }
 
+  /// खरी .csv फाइल download (Web). जमलं नाही तर आपोआप clipboard वर copy होतं.
+  Future<void> _download(_Sheet sheet) async {
+    if (sheet.rows.isEmpty) {
+      adminSnack(context, 'Nothing to export for these filters.', error: true);
+      return;
+    }
+    final n = DateTime.now();
+    String two(int v) => v.toString().padLeft(2, '0');
+    final name = 'little_steps_${_report.name}_'
+        '${n.year}${two(n.month)}${two(n.day)}.csv';
+    final ok = downloadCsvFile(name, _csv(sheet));
+    if (ok) {
+      adminSnack(context, '$name downloaded (${sheet.rows.length} rows).');
+    } else {
+      await _copy(sheet);
+    }
+  }
+
   // ------------------------------------------------------------------
   // UI
   // ------------------------------------------------------------------
@@ -359,7 +378,7 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
 
         return AdminPage(
           title: 'Reports & Export',
-          subtitle: 'Real school data as CSV for Excel / Google Sheets',
+          subtitle: 'Real school data as a CSV file for Excel / Google Sheets',
           actions: [
             AdminDropdown<String?>(
               label: 'Class',
@@ -442,11 +461,24 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
               const SizedBox(height: 16),
               AdminCard(
                 title: '${_labels[_report]} · ${sheet.rows.length} rows',
-                trailing: FilledButton.icon(
-                  onPressed: () => _copy(sheet),
-                  style: adminPrimaryButton(),
-                  icon: const Icon(Icons.copy_rounded, size: 18),
-                  label: const Text('Copy CSV'),
+                trailing: Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    OutlinedButton.icon(
+                      onPressed: () => _copy(sheet),
+                      style: OutlinedButton.styleFrom(
+                          minimumSize: const Size(0, 44)),
+                      icon: const Icon(Icons.copy_rounded, size: 18),
+                      label: const Text('Copy CSV'),
+                    ),
+                    FilledButton.icon(
+                      onPressed: () => _download(sheet),
+                      style: adminPrimaryButton(),
+                      icon: const Icon(Icons.download_rounded, size: 18),
+                      label: const Text('Download CSV'),
+                    ),
+                  ],
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -466,7 +498,7 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
                         padding: const EdgeInsets.only(top: 10),
                         child: Text(
                           'Showing first $previewMax of ${sheet.rows.length} rows. '
-                              'Copy CSV includes all rows.',
+                              'Copy / Download CSV includes all rows.',
                           style: const TextStyle(
                               color: AdminColors.muted, fontSize: 12),
                         ),
