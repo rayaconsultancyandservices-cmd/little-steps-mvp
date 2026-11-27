@@ -83,6 +83,14 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   int _loadToken = 0;
 
   // ---------------------------------------------------------------
+  // नवीन: HOLIDAY — Teacher ने पाठवलेलं 'Holiday' circular (event date सह)
+  // त्या तारखेला सुट्टी मानली जाते. त्या दिवशी Present / Absent दाखवत नाही.
+  // ---------------------------------------------------------------
+  /// शाळा चालू असूनही Teacher ला त्या सुट्टीच्या दिवशी attendance पाहायचा /
+  /// घ्यायचा असेल तेव्हा true (दिवस बदलला की पुन्हा false).
+  bool _holidayShownAnyway = false;
+
+  // ---------------------------------------------------------------
   // नवीन: "Scan class with camera" (AI)
   // ---------------------------------------------------------------
   bool _scanning = false;
@@ -93,6 +101,23 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
   /// निवडलेला दिवस आजचा आहे का? (आजचा असेल तर नेहमीसारखं mark / save चालतं)
   bool get _isToday => _selectedDay == _dateOnly(DateTime.now());
+
+  /// नवीन: दिलेल्या तारखेची सुट्टी (category == 'Holiday' असलेला event /
+  /// circular), नसेल तर null. AppState.events = Teacher चे events + circulars
+  /// ज्यांना event date आहे — म्हणजे Circular screen मधून दिलेली date इथे येते.
+  SchoolEvent? _holidayOn(DateTime day) {
+    final d = _dateOnly(day);
+    for (final e in AppState.instance.eventsOn(d)) {
+      if (e.category.trim().toLowerCase() == 'holiday') return e;
+    }
+    return null;
+  }
+
+  /// निवडलेला दिवस सुट्टीचा आहे का (असेल तर event, नसेल तर null).
+  SchoolEvent? get _holiday => _holidayOn(_selectedDay);
+
+  /// true असेल तर Present / Absent ची list लपवून फक्त Holiday card दाखवतो.
+  bool get _isHolidayView => _holiday != null && !_holidayShownAnyway;
 
   /// आज असेल तर आजची list, नाहीतर निवडलेल्या मागच्या दिवसाची list.
   List<_Student> get _view => _isToday ? students : _pastStudents;
@@ -251,9 +276,14 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       Uint8List classPhoto, List<_Student> kids) async {
     // Admin ने ठेवलेले reference face photos (AppState.students मधून) गोळा करतो.
     final ids = kids.map((k) => k.id).toSet();
+    // नवीन: फक्त ज्या मुलांच्या Parent ने Face recognition ला "Yes" म्हटलंय त्यांचाच
+    // reference फोटो वापरतो. बाकीची मुलं "not seen" दाखवतात आणि Teacher manually mark करते.
     final refs = <String, String>{
       for (final c in AppState.instance.students)
-        if (ids.contains(c.id) && c.facePhoto.isNotEmpty) c.id: c.facePhoto,
+        if (ids.contains(c.id) &&
+            c.facePhoto.isNotEmpty &&
+            c.consentFace == true)
+          c.id: c.facePhoto,
     };
     return FaceMatchService.instance.match(classPhoto, refs);
   }
@@ -262,7 +292,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     if (_scanning) return;
 
     if (students.isEmpty) {
-      _snack('Add students first (tap the + icon at the top).');
+      _snack('No students in this class yet. Please ask the school admin to add students.');
       return;
     }
 
@@ -379,6 +409,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     setState(() {
       _selectedDay = d;
       selectedFilter = 0;
+      _holidayShownAnyway = false; // नवीन दिवस -> पुन्हा Holiday view
     });
 
     if (_isToday) {
@@ -584,7 +615,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     if (isSaving) return;
 
     if (students.isEmpty) {
-      _snack('Add students first (tap the + icon at the top).');
+      _snack('No students in this class yet. Please ask the school admin to add students.');
       return;
     }
 
@@ -722,13 +753,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         subtitle:
         '${AppState.instance.className} · ${AppState.dateLabel(_selectedDay)}',
         onBack: widget.onBack,
-        actions: [
-          IconButton(
-            tooltip: 'Add student',
-            onPressed: _openAddStudent,
-            icon: const Icon(Icons.person_add_alt_1_rounded, color: primary),
-          ),
-        ],
       ),
       body: Column(
         children: [
@@ -741,164 +765,175 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                 ..._buildPastNotices(),
                 const SizedBox(height: 12),
 
-                // नवीन: रजा मंजूर आणि Present असा mismatch असेल तर सूचना.
-                if (_isToday) _buildLeaveFixNotice(),
-
-                // नवीन: Scan class with camera (फक्त आजच्या दिवशी)
-                if (_isToday) ...[
-                  _buildScanCard(),
+                // नवीन: त्या दिवशी Holiday असेल तर Holiday card (किंवा छोटी सूचना).
+                if (_holiday != null) ...[
+                  _buildHolidayCard(_holiday!),
                   const SizedBox(height: 12),
                 ],
 
-                // SMALL SUMMARY CARDS
-                Row(
-                  children: [
-                    Expanded(
-                      child: _summaryCard(
-                        'Present',
-                        present,
-                        green,
-                        const Color(0xFFE5F5ED),
-                        Icons.check_circle_rounded,
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: _summaryCard(
-                        'Absent',
-                        absent,
-                        red,
-                        const Color(0xFFFFEFED),
-                        Icons.cancel_rounded,
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: _summaryCard(
-                        _isToday ? 'Pending' : 'Not marked',
-                        notMarked,
-                        orange,
-                        const Color(0xFFFFF4E4),
-                        Icons.hourglass_bottom_rounded,
-                      ),
-                    ),
+                // Holiday नसेल (किंवा Teacher ने "तरीही दाखवा" दाबलं) तेव्हाच
+                // खालचा attendance भाग दिसतो.
+                if (!_isHolidayView) ...[
+
+                  // नवीन: रजा मंजूर आणि Present असा mismatch असेल तर सूचना.
+                  if (_isToday) _buildLeaveFixNotice(),
+
+                  // नवीन: Scan class with camera (फक्त आजच्या दिवशी)
+                  if (_isToday) ...[
+                    _buildScanCard(),
+                    const SizedBox(height: 12),
                   ],
-                ),
 
-                const SizedBox(height: 18),
-
-                // SEARCH
-                _buildSearch(),
-
-                const SizedBox(height: 11),
-
-                // FILTER CHIPS
-                SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: Row(
+                  // SMALL SUMMARY CARDS
+                  Row(
                     children: [
-                      _filterChip('All', 0, total),
-                      _filterChip('Present', 1, present),
-                      _filterChip('Absent', 2, absent),
-                      _filterChip('Late', 3, lateCount),
-                      _filterChip(_isToday ? 'Pending' : 'Not marked', 4, notMarked),
+                      Expanded(
+                        child: _summaryCard(
+                          'Present',
+                          present,
+                          green,
+                          const Color(0xFFE5F5ED),
+                          Icons.check_circle_rounded,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: _summaryCard(
+                          'Absent',
+                          absent,
+                          red,
+                          const Color(0xFFFFEFED),
+                          Icons.cancel_rounded,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: _summaryCard(
+                          _isToday ? 'Pending' : 'Not marked',
+                          notMarked,
+                          orange,
+                          const Color(0xFFFFF4E4),
+                          Icons.hourglass_bottom_rounded,
+                        ),
+                      ),
                     ],
                   ),
-                ),
 
-                const SizedBox(height: 12),
+                  const SizedBox(height: 18),
 
-                // STUDENT LIST
-                Container(
-                  decoration: _cardDecoration(),
-                  clipBehavior: Clip.antiAlias,
-                  child: Column(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 15,
-                          vertical: 11,
-                        ),
-                        color: const Color(0xFFF8FAF9),
-                        child: Row(
-                          children: [
-                            const Expanded(
-                              child: Text(
-                                'STUDENTS',
-                                style: TextStyle(
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.w800,
-                                  color: muted,
-                                  letterSpacing: 0.8,
-                                ),
-                              ),
-                            ),
-                            const _LegendDot('P', green),
-                            const SizedBox(width: 9),
-                            const _LegendDot('A', red),
-                            const SizedBox(width: 9),
-                            const _LegendDot('L', orange),
-                          ],
-                        ),
-                      ),
-                      if (list.isEmpty)
-                        Padding(
-                          padding: const EdgeInsets.all(28),
-                          child: Column(
+                  // SEARCH
+                  _buildSearch(),
+
+                  const SizedBox(height: 11),
+
+                  // FILTER CHIPS
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: [
+                        _filterChip('All', 0, total),
+                        _filterChip('Present', 1, present),
+                        _filterChip('Absent', 2, absent),
+                        _filterChip('Late', 3, lateCount),
+                        _filterChip(_isToday ? 'Pending' : 'Not marked', 4, notMarked),
+                      ],
+                    ),
+                  ),
+
+                  const SizedBox(height: 12),
+
+                  // STUDENT LIST
+                  Container(
+                    decoration: _cardDecoration(),
+                    clipBehavior: Clip.antiAlias,
+                    child: Column(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 15,
+                            vertical: 11,
+                          ),
+                          color: const Color(0xFFF8FAF9),
+                          child: Row(
                             children: [
-                              Icon(
-                                total == 0
-                                    ? Icons.group_add_rounded
-                                    : Icons.search_off_rounded,
-                                color: const Color(0xFFADB8B4),
-                                size: 35,
-                              ),
-                              const SizedBox(height: 8),
-                              Text(
-                                total == 0
-                                    ? 'No students yet'
-                                    : 'No students found',
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.w700,
-                                  color: dark,
+                              const Expanded(
+                                child: Text(
+                                  'STUDENTS',
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w800,
+                                    color: muted,
+                                    letterSpacing: 0.8,
+                                  ),
                                 ),
                               ),
-                              const SizedBox(height: 4),
-                              Text(
-                                total == 0
-                                    ? 'Tap the + icon at the top to add your first student.'
-                                    : 'Try another name or filter.',
-                                textAlign: TextAlign.center,
-                                style:
-                                const TextStyle(fontSize: 11, color: muted),
-                              ),
+                              const _LegendDot('P', green),
+                              const SizedBox(width: 9),
+                              const _LegendDot('A', red),
+                              const SizedBox(width: 9),
+                              const _LegendDot('L', orange),
                             ],
                           ),
-                        )
-                      else
-                        ...List.generate(list.length, (index) {
-                          return Column(
-                            children: [
-                              _studentRow(list[index]),
-                              if (index != list.length - 1)
-                                const Divider(
-                                  height: 1,
-                                  indent: 15,
-                                  endIndent: 15,
-                                  color: Color(0xFFEDF1EF),
+                        ),
+                        if (list.isEmpty)
+                          Padding(
+                            padding: const EdgeInsets.all(28),
+                            child: Column(
+                              children: [
+                                Icon(
+                                  total == 0
+                                      ? Icons.group_add_rounded
+                                      : Icons.search_off_rounded,
+                                  color: const Color(0xFFADB8B4),
+                                  size: 35,
                                 ),
-                            ],
-                          );
-                        }),
-                    ],
+                                const SizedBox(height: 8),
+                                Text(
+                                  total == 0
+                                      ? 'No students yet'
+                                      : 'No students found',
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w700,
+                                    color: dark,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  total == 0
+                                      ? 'Students are added by the school admin. Please contact the admin.'
+                                      : 'Try another name or filter.',
+                                  textAlign: TextAlign.center,
+                                  style:
+                                  const TextStyle(fontSize: 11, color: muted),
+                                ),
+                              ],
+                            ),
+                          )
+                        else
+                          ...List.generate(list.length, (index) {
+                            return Column(
+                              children: [
+                                _studentRow(list[index]),
+                                if (index != list.length - 1)
+                                  const Divider(
+                                    height: 1,
+                                    indent: 15,
+                                    endIndent: 15,
+                                    color: Color(0xFFEDF1EF),
+                                  ),
+                              ],
+                            );
+                          }),
+                      ],
+                    ),
                   ),
-                ),
 
-                const SizedBox(height: 16),
+                  const SizedBox(height: 16),
 
-                // SAVE SECTION (appears after the last student)
-                // मागचा दिवस पाहताना Save नाही, फक्त summary.
-                if (_isToday) _buildSaveSection() else _buildPastSummary(),
+                  // SAVE SECTION (appears after the last student)
+                  // मागचा दिवस पाहताना Save नाही, फक्त summary.
+                  if (_isToday) _buildSaveSection() else _buildPastSummary(),
+                ], // <- if (!_isHolidayView)
               ],
             ),
           ),
@@ -1011,6 +1046,135 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   }
 
   // ---------------------------------------------------------------
+  // नवीन: HOLIDAY card
+  // ---------------------------------------------------------------
+  static const Color _holidayFg = Color(0xFF8066C8);
+  static const Color _holidayBg = Color(0xFFF1ECFB);
+
+  Widget _buildHolidayCard(SchoolEvent h) {
+    // Teacher ने "तरीही दाखवा" दाबलं असेल तर फक्त छोटी सूचना + परत जायचं बटण.
+    if (_holidayShownAnyway) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+        decoration: BoxDecoration(
+          color: _holidayBg,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: const Color(0xFFD9CEF3)),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.beach_access_rounded,
+                size: 16, color: _holidayFg),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'This day is marked as a holiday (${h.title}).',
+                style: const TextStyle(
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.w700,
+                  color: _holidayFg,
+                ),
+              ),
+            ),
+            TextButton(
+              onPressed: () => setState(() => _holidayShownAnyway = false),
+              style: TextButton.styleFrom(
+                foregroundColor: _holidayFg,
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                minimumSize: const Size(0, 30),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              child: const Text(
+                'Hide',
+                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final note = h.note.trim();
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(18, 22, 18, 16),
+      decoration: _cardDecoration(),
+      child: Column(
+        children: [
+          Container(
+            height: 62,
+            width: 62,
+            decoration: const BoxDecoration(
+              color: _holidayBg,
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(Icons.beach_access_rounded,
+                size: 30, color: _holidayFg),
+          ),
+          const SizedBox(height: 12),
+          const Text(
+            'Holiday',
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.w900,
+              color: dark,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            h.title,
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w800,
+              color: _holidayFg,
+            ),
+          ),
+          if (note.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(
+              note,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontSize: 11.5,
+                height: 1.35,
+                color: muted,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+          const SizedBox(height: 10),
+          const Text(
+            'School is closed. No attendance is taken on a holiday, and '
+                'parents see this day as a holiday too.',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 11,
+              height: 1.4,
+              color: muted,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 8),
+          TextButton(
+            onPressed: () => setState(() => _holidayShownAnyway = true),
+            style: TextButton.styleFrom(foregroundColor: primary),
+            child: Text(
+              _isToday
+                  ? 'School was open? Mark attendance anyway'
+                  : 'School was open? Show attendance anyway',
+              style: const TextStyle(
+                fontSize: 11.5,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------
   // नवीन WIDGETS: तारीख bar, मागच्या दिवसाचे notices, badge, summary
   // ---------------------------------------------------------------
   Widget _buildDayBar() {
@@ -1076,6 +1240,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
   List<Widget> _buildPastNotices() {
     if (_isToday) return const [];
+    // नवीन: Holiday view मध्ये Present / Absent नाही, म्हणून ही सूचना नको.
+    if (_isHolidayView) return const [];
 
     final widgets = <Widget>[const SizedBox(height: 10)];
 
@@ -1521,101 +1687,100 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
     if (student.status == null) avatarText = primary;
 
-    return GestureDetector(
-      onLongPress: () => _openStudentActions(student),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
-        color: isAbsent
-            ? const Color(0xFFFFFAF9)
-            : isLate
-            ? const Color(0xFFFFFCF6)
-            : Colors.white,
-        padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 10),
-        child: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(2),
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                border: Border.all(
-                  color: student.status == null
-                      ? Colors.transparent
-                      : ring.withValues(alpha: 0.7),
-                  width: 2,
-                ),
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 200),
+      color: isAbsent
+          ? const Color(0xFFFFFAF9)
+          : isLate
+          ? const Color(0xFFFFFCF6)
+          : Colors.white,
+      padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 10),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(2),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: student.status == null
+                    ? Colors.transparent
+                    : ring.withValues(alpha: 0.7),
+                width: 2,
               ),
-              child: CircleAvatar(
-                radius: 19,
-                backgroundColor: student.status == null
-                    ? const Color(0xFFE4F3EF)
-                    : ring.withValues(alpha: 0.13),
-                child: Text(
-                  initials(student.name),
-                  style: TextStyle(
-                    fontSize: 11.5,
-                    fontWeight: FontWeight.w800,
-                    color: student.status == null ? avatarText : ring,
-                  ),
+            ),
+            child: CircleAvatar(
+              radius: 19,
+              backgroundColor: student.status == null
+                  ? const Color(0xFFE4F3EF)
+                  : ring.withValues(alpha: 0.13),
+              child: Text(
+                initials(student.name),
+                style: TextStyle(
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w800,
+                  color: student.status == null ? avatarText : ring,
                 ),
               ),
             ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    student.name,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  student.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: dark,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: (_isToday && isAbsent) ? () => _pickReason(student) : null,
+                  child: Text(
+                    subtitle,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontSize: 12,
-                      color: dark,
-                      fontWeight: FontWeight.w800,
+                    style: TextStyle(
+                      fontSize: 9.5,
+                      color: subtitleColor,
+                      fontWeight: FontWeight.w700,
+                      decoration: _isToday && isAbsent && student.reason == null
+                          ? TextDecoration.underline
+                          : null,
+                      decorationColor: subtitleColor,
                     ),
                   ),
-                  const SizedBox(height: 4),
-                  GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTap: (_isToday && isAbsent) ? () => _pickReason(student) : null,
-                    child: Text(
-                      subtitle,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 9.5,
-                        color: subtitleColor,
-                        fontWeight: FontWeight.w700,
-                        decoration: _isToday && isAbsent && student.reason == null
-                            ? TextDecoration.underline
-                            : null,
-                        decorationColor: subtitleColor,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
+                ),
+              ],
             ),
+          ),
+          const SizedBox(width: 6),
+          if (_isToday) ...[
+            _statusButton('P', isPresent, green,
+                    () => markStudent(student, _kPresent)),
             const SizedBox(width: 6),
-            if (_isToday) ...[
-              _statusButton('P', isPresent, green,
-                      () => markStudent(student, _kPresent)),
-              const SizedBox(width: 6),
-              _statusButton(
-                  'A', isAbsent, red, () => markStudent(student, _kAbsent)),
-              const SizedBox(width: 6),
-              _statusButton(
-                  'L', isLate, orange, () => markStudent(student, _kLate)),
-            ] else
-              _pastBadge(student),
-          ],
-        ),
+            _statusButton(
+                'A', isAbsent, red, () => markStudent(student, _kAbsent)),
+            const SizedBox(width: 6),
+            _statusButton(
+                'L', isLate, orange, () => markStudent(student, _kLate)),
+          ] else
+            _pastBadge(student),
+        ],
       ),
     );
   }
 
   // ---------------------------------------------------------------
-  // ADD / REMOVE STUDENT  (नवीन: Teacher स्वतः मुलं जोडतो)
+  // HELPERS
+  // बदल (Step 2): मुलं जोडणं / बदलणं / काढणं आता फक्त Admin करतो (Figma A4).
+  // Teacher इथे फक्त attendance घेते, म्हणून Add / Edit / Remove काढलं आहे.
   // ---------------------------------------------------------------
   void _snack(String text) {
     ScaffoldMessenger.of(context)
@@ -1623,177 +1788,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       ..showSnackBar(
         SnackBar(content: Text(text), behavior: SnackBarBehavior.floating),
       );
-  }
-
-  Future<void> _openAddStudent() async {
-    final child = await showModalBottomSheet<ChildInfo>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (_) => AddStudentSheet(nextRoll: students.length + 1),
-    );
-    if (child == null || !mounted) return;
-
-    try {
-      await AppState.instance.addStudent(child);
-      if (!mounted) return;
-      _snack(
-        '${child.name} added. Parent can login with ${child.parentEmail.trim().toLowerCase()}',
-      );
-    } catch (e) {
-      if (!mounted) return;
-      _snack('Could not add student: $e');
-    }
-  }
-
-  // ---------------------------------------------------------------
-  // EDIT / REMOVE  (बदल: long-press वर आता Edit आणि Remove दोन्ही पर्याय)
-  // ---------------------------------------------------------------
-  Future<void> _openStudentActions(_Student student) async {
-    final action = await showModalBottomSheet<String>(
-      context: context,
-      backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (ctx) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(8, 12, 8, 8),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                height: 4,
-                width: 40,
-                decoration: BoxDecoration(
-                  color: const Color(0xFFDDE5E2),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-              ),
-              const SizedBox(height: 12),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 14),
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text(
-                    student.name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w800,
-                      color: dark,
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 4),
-              ListTile(
-                leading: const Icon(Icons.edit_rounded, color: primary),
-                title: const Text(
-                  'Edit student details',
-                  style: TextStyle(fontWeight: FontWeight.w700),
-                ),
-                onTap: () => Navigator.pop(ctx, 'edit'),
-              ),
-              ListTile(
-                leading: const Icon(Icons.person_remove_rounded, color: red),
-                title: const Text(
-                  'Remove student',
-                  style: TextStyle(fontWeight: FontWeight.w700, color: red),
-                ),
-                onTap: () => Navigator.pop(ctx, 'remove'),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-    if (!mounted) return;
-    if (action == 'edit') {
-      await _openEditStudent(student);
-    } else if (action == 'remove') {
-      await _confirmRemove(student);
-    }
-  }
-
-  Future<void> _openEditStudent(_Student student) async {
-    final found = AppState.instance.students.where((c) => c.id == student.id);
-    if (found.isEmpty) {
-      _snack('Student not found. Please try again.');
-      return;
-    }
-    final previous = found.first;
-
-    final updated = await showModalBottomSheet<ChildInfo>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (_) =>
-          AddStudentSheet(nextRoll: previous.rollNo, existing: previous),
-    );
-    if (updated == null || !mounted) return;
-
-    try {
-      await AppState.instance.updateStudent(updated, previous: previous);
-      if (!mounted) return;
-      final newMail = updated.parentEmail.trim().toLowerCase();
-      final mailChanged =
-          previous.parentEmail.trim().toLowerCase() != newMail;
-      _snack(
-        mailChanged
-            ? '${updated.name} updated. Old parent login removed; '
-            'new parent can login with $newMail'
-            : '${updated.name} updated.',
-      );
-    } catch (e) {
-      if (!mounted) return;
-      _snack('Could not update student: $e');
-    }
-  }
-
-  Future<void> _confirmRemove(_Student student) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Text(
-          'Remove student?',
-          style: TextStyle(fontWeight: FontWeight.w800),
-        ),
-        content: Text(
-          '${student.name} will be removed from the class. '
-              'The parent will no longer be able to see this child.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: red,
-              foregroundColor: Colors.white,
-            ),
-            child: const Text('Remove'),
-          ),
-        ],
-      ),
-    );
-    if (ok != true || !mounted) return;
-    try {
-      await AppState.instance.deleteStudent(student.id);
-    } catch (e) {
-      if (!mounted) return;
-      _snack('Could not remove student: $e');
-    }
   }
 
   Widget _statusButton(
@@ -1886,356 +1880,6 @@ class _LegendDot extends StatelessWidget {
           ),
         ),
       ],
-    );
-  }
-}
-
-// =====================================================================
-// ADD STUDENT SHEET
-// =====================================================================
-class AddStudentSheet extends StatefulWidget {
-  const AddStudentSheet({required this.nextRoll, this.existing});
-
-  final int nextRoll;
-
-  /// null = नवीन विद्यार्थी जोडणे; नाहीतर या विद्यार्थ्याची माहिती edit करणे.
-  final ChildInfo? existing;
-
-  @override
-  State<AddStudentSheet> createState() => _AddStudentSheetState();
-}
-
-class _AddStudentSheetState extends State<AddStudentSheet> {
-  static const Color dark = Color(0xFF183B45);
-  static const Color primary = Color(0xFF168C80);
-  static const Color muted = Color(0xFF84918D);
-
-  final _formKey = GlobalKey<FormState>();
-  final _name = TextEditingController();
-  final _roll = TextEditingController();
-  final _parent = TextEditingController();
-  final _email = TextEditingController();
-  final _phone = TextEditingController();
-  final _allergy = TextEditingController();
-
-  DateTime? _dob;
-  String _gender = 'Boy';
-  String? _blood;
-
-  static const _bloodGroups = [
-    'A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-',
-  ];
-
-  bool get _isEdit => widget.existing != null;
-
-  /// Edit करताना parent email बदलला का (जुन्या parent चं login निघून जातं).
-  bool get _emailChanged =>
-      _isEdit &&
-          _email.text.trim().toLowerCase() !=
-              widget.existing!.parentEmail.trim().toLowerCase();
-
-  @override
-  void initState() {
-    super.initState();
-    final e = widget.existing;
-    if (e == null) {
-      _roll.text = '${widget.nextRoll}';
-    } else {
-      _name.text = e.name;
-      _roll.text = '${e.rollNo}';
-      _parent.text = e.parentName;
-      _email.text = e.parentEmail;
-      _phone.text = e.contacts.isNotEmpty ? e.contacts.first.phone : '';
-      _allergy.text = e.allergyNote;
-      _dob = e.dob;
-      _gender = e.gender == 'Girl' ? 'Girl' : 'Boy';
-      _blood = _bloodGroups.contains(e.bloodGroup) ? e.bloodGroup : null;
-      // email बदलला की खाली warning दाखवण्यासाठी.
-      _email.addListener(() {
-        if (mounted) setState(() {});
-      });
-    }
-  }
-
-  @override
-  void dispose() {
-    _name.dispose();
-    _roll.dispose();
-    _parent.dispose();
-    _email.dispose();
-    _phone.dispose();
-    _allergy.dispose();
-    super.dispose();
-  }
-
-  InputDecoration _dec(String label, {String? hint}) => InputDecoration(
-    labelText: label,
-    hintText: hint,
-    filled: true,
-    fillColor: const Color(0xFFF4F9F8),
-    isDense: true,
-    contentPadding:
-    const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
-    border: OutlineInputBorder(
-      borderRadius: BorderRadius.circular(12),
-      borderSide: const BorderSide(color: Color(0xFFD4E5E1)),
-    ),
-    enabledBorder: OutlineInputBorder(
-      borderRadius: BorderRadius.circular(12),
-      borderSide: const BorderSide(color: Color(0xFFD4E5E1)),
-    ),
-    focusedBorder: OutlineInputBorder(
-      borderRadius: BorderRadius.circular(12),
-      borderSide: const BorderSide(color: primary, width: 1.4),
-    ),
-  );
-
-  Future<void> _pickDob() async {
-    final now = DateTime.now();
-    final initial = _dob ?? DateTime(now.year - 3, 1, 1);
-    final earliest = DateTime(now.year - 10);
-    final d = await showDatePicker(
-      context: context,
-      initialDate: initial,
-      // जुनी dob 10 वर्षांपेक्षा जुनी असली तरी picker crash होत नाही.
-      firstDate: initial.isBefore(earliest) ? initial : earliest,
-      lastDate: now,
-    );
-    if (d != null) setState(() => _dob = d);
-  }
-
-  void _submit() {
-    if (!_formKey.currentState!.validate()) return;
-    final phone = _phone.text.trim();
-    final e = widget.existing;
-
-    // Edit करताना बाकीचे contacts (आई/बाबा/आजी...) पुसले जाऊ नयेत.
-    final contacts = <ParentContact>[...(e?.contacts ?? const <ParentContact>[])];
-    if (phone.isNotEmpty) {
-      if (contacts.isEmpty) {
-        contacts.add(ParentContact(_parent.text.trim(), 'Parent', phone));
-      } else {
-        final c0 = contacts.first;
-        contacts[0] = ParentContact(
-          c0.name.isEmpty ? _parent.text.trim() : c0.name,
-          c0.relation.isEmpty ? 'Parent' : c0.relation,
-          phone,
-        );
-      }
-    } else if (contacts.isNotEmpty) {
-      contacts.removeAt(0);
-    }
-
-    Navigator.pop(
-      context,
-      ChildInfo(
-        id: e?.id ?? '',
-        name: _name.text.trim(),
-        // नवीन: AppState.addStudent() class चं नाव स्वतः भरतो; Edit: आधीचं तेच.
-        className: e?.className ?? '',
-        classId: e?.classId ?? '',
-        rollNo: int.tryParse(_roll.text.trim()) ?? widget.nextRoll,
-        dob: _dob ?? DateTime(DateTime.now().year - 3, 1, 1),
-        bloodGroup: _blood ?? '',
-        gender: _gender,
-        allergyNote: _allergy.text.trim(),
-        parentName: _parent.text.trim(),
-        parentEmail: _email.text.trim().toLowerCase(),
-        pickupNote: e?.pickupNote ?? '',
-        contacts: contacts,
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final bottom = MediaQuery.of(context).viewInsets.bottom;
-
-    return Padding(
-      padding: EdgeInsets.fromLTRB(18, 14, 18, 14 + bottom),
-      child: SafeArea(
-        top: false,
-        child: SingleChildScrollView(
-          child: Form(
-            key: _formKey,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Center(
-                  child: Container(
-                    height: 4,
-                    width: 40,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFDDE5E2),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                Text(
-                  _isEdit ? 'Edit student' : 'Add student',
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w800,
-                    color: dark,
-                  ),
-                ),
-                const SizedBox(height: 3),
-                Text(
-                  _isEdit
-                      ? 'Update the details and tap Save changes.'
-                      : 'Parent can login with the email you enter here.',
-                  style: TextStyle(fontSize: 11, color: muted),
-                ),
-                const SizedBox(height: 14),
-                TextFormField(
-                  controller: _name,
-                  textCapitalization: TextCapitalization.words,
-                  decoration: _dec('Student name'),
-                  validator: (v) => (v == null || v.trim().length < 2)
-                      ? 'Enter student name'
-                      : null,
-                ),
-                const SizedBox(height: 10),
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextFormField(
-                        controller: _roll,
-                        keyboardType: TextInputType.number,
-                        inputFormatters: [
-                          FilteringTextInputFormatter.digitsOnly,
-                        ],
-                        decoration: _dec('Roll no'),
-                        validator: (v) =>
-                        (v == null || v.trim().isEmpty) ? 'Required' : null,
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      flex: 2,
-                      child: InkWell(
-                        onTap: _pickDob,
-                        borderRadius: BorderRadius.circular(12),
-                        child: InputDecorator(
-                          decoration: _dec('Date of birth'),
-                          child: Text(
-                            _dob == null
-                                ? 'Select'
-                                : '${_dob!.day} ${AppState.monthShort(_dob!.month)} ${_dob!.year}',
-                            style: TextStyle(
-                              fontSize: 14,
-                              color: _dob == null ? muted : dark,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 10),
-                Row(
-                  children: [
-                    for (final g in const ['Boy', 'Girl']) ...[
-                      ChoiceChip(
-                        label: Text(g),
-                        selected: _gender == g,
-                        showCheckmark: false,
-                        selectedColor: primary,
-                        backgroundColor: const Color(0xFFE4F3EF),
-                        side: BorderSide.none,
-                        labelStyle: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w700,
-                          color: _gender == g ? Colors.white : primary,
-                        ),
-                        onSelected: (_) => setState(() => _gender = g),
-                      ),
-                      const SizedBox(width: 8),
-                    ],
-                    const SizedBox(width: 4),
-                    Expanded(
-                      child: DropdownButtonFormField<String>(
-                        initialValue: _blood,
-                        decoration: _dec('Blood group'),
-                        items: [
-                          for (final b in _bloodGroups)
-                            DropdownMenuItem(value: b, child: Text(b)),
-                        ],
-                        onChanged: (v) => setState(() => _blood = v),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 10),
-                TextFormField(
-                  controller: _parent,
-                  textCapitalization: TextCapitalization.words,
-                  decoration: _dec('Parent name'),
-                  validator: (v) => (v == null || v.trim().length < 2)
-                      ? 'Enter parent name'
-                      : null,
-                ),
-                const SizedBox(height: 10),
-                TextFormField(
-                  controller: _email,
-                  keyboardType: TextInputType.emailAddress,
-                  decoration: _dec('Parent email (used for login)'),
-                  validator: (v) {
-                    final t = (v ?? '').trim();
-                    final ok = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(t);
-                    return ok ? null : 'Enter a valid email';
-                  },
-                ),
-                if (_emailChanged) ...[
-                  const SizedBox(height: 6),
-                  const Text(
-                    "Changing the email removes the old parent's login. "
-                        'The new email can login right away.',
-                    style: TextStyle(
-                      fontSize: 10.5,
-                      color: Color(0xFFD99437),
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ],
-                const SizedBox(height: 10),
-                TextFormField(
-                  controller: _phone,
-                  keyboardType: TextInputType.phone,
-                  decoration: _dec('Parent phone (optional)'),
-                ),
-                const SizedBox(height: 10),
-                TextFormField(
-                  controller: _allergy,
-                  decoration: _dec('Allergy / medical note (optional)'),
-                ),
-                const SizedBox(height: 16),
-                SizedBox(
-                  width: double.infinity,
-                  height: 46,
-                  child: ElevatedButton(
-                    onPressed: _submit,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: primary,
-                      foregroundColor: Colors.white,
-                      elevation: 0,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                    ),
-                    child: Text(
-                      _isEdit ? 'Save changes' : 'Add student',
-                      style: const TextStyle(fontWeight: FontWeight.w700),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
     );
   }
 }

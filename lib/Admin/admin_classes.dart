@@ -1,16 +1,176 @@
+import 'dart:async';
+
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
+import '../services/auth_service.dart';
 import 'admin_state.dart';
 import 'admin_widgets.dart';
 
-/// Classes: class बनवा, teacher / students ची संख्या आणि आजचा attendance बघा.
-class AdminClassesScreen extends StatelessWidget {
+/// Classes: Admin आधी class बनवतो आणि teacher चा email देतो.
+///  - Teacher आधीच registered असेल तर लगेच approve + class assign.
+///  - Registered नसेल तर email class वर "pending" म्हणून साठवतो; teacher त्याच
+///    email ने Teacher app मध्ये register झाला की आपोआप approve + class assign.
+class AdminClassesScreen extends StatefulWidget {
   const AdminClassesScreen({super.key});
+
+  @override
+  State<AdminClassesScreen> createState() => _AdminClassesScreenState();
+}
+
+class _AdminClassesScreenState extends State<AdminClassesScreen> {
+  final FirebaseFirestore _db = FirebaseFirestore.instance;
+
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _sub;
+
+  /// classId -> pending teacher email (teacher अजून जोडला गेलेला नाही)
+  Map<String, String> _pending = {};
+
+  /// एकाच class चं auto-link दोनदा चालू होऊ नये म्हणून.
+  final Set<String> _linking = {};
+
+  static final RegExp _emailRe = RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$');
+
+  // -------------------------------------------------------------------
+  // life-cycle
+  // -------------------------------------------------------------------
+  @override
+  void initState() {
+    super.initState();
+    // classes चे pending teacherEmail live ऐकतो.
+    _sub = _db.collection('classes').snapshots().listen(
+          (snap) {
+        final m = <String, String>{};
+        for (final d in snap.docs) {
+          final x = d.data();
+          final mail =
+          (x['teacherEmail'] ?? '').toString().trim().toLowerCase();
+          final uid = (x['teacherUid'] ?? '').toString();
+          if (mail.isNotEmpty && uid.isEmpty) m[d.id] = mail;
+        }
+        if (!mounted) return;
+        setState(() => _pending = m);
+        _tryAutoLink();
+      },
+      onError: (_) {},
+    );
+    // नवीन teacher register झाला (teachers list बदलली) की पुन्हा तपासतो.
+    AdminState.instance.addListener(_onStateChanged);
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    AdminState.instance.removeListener(_onStateChanged);
+    super.dispose();
+  }
+
+  void _onStateChanged() {
+    _tryAutoLink();
+  }
+
+  // -------------------------------------------------------------------
+  // helpers
+  // -------------------------------------------------------------------
+  /// Registered teachers मधून email ने teacher शोधतो (lowercase तुलना).
+  static AdminTeacher? _findTeacherByEmail(AdminState s, String email) {
+    final mail = email.trim().toLowerCase();
+    if (mail.isEmpty) return null;
+    for (final t in s.teachers) {
+      if (t.email.trim().toLowerCase() == mail) return t;
+    }
+    return null;
+  }
+
+  /// Pending email असलेल्या class साठी teacher register झाला असेल तर
+  /// त्याला approve करून class देतो.
+  Future<void> _tryAutoLink() async {
+    if (_pending.isEmpty) return;
+    final s = AdminState.instance;
+
+    for (final e in _pending.entries.toList()) {
+      final classId = e.key;
+      if (_linking.contains(classId)) continue;
+
+      final t = _findTeacherByEmail(s, e.value);
+      if (t == null) continue; // अजून register झालेला नाही
+
+      final matches = s.classes.where((c) => c.id == classId).toList();
+      if (matches.isEmpty) continue;
+      final cls = matches.first;
+
+      // Teacher आधीच दुसऱ्या class ला असेल किंवा या class ला दुसरा teacher असेल तर थांबतो.
+      if (t.classId.isNotEmpty && t.classId != classId) continue;
+      if (s.otherTeacherOfClass(classId, t.uid) != null) continue;
+
+      _linking.add(classId);
+      try {
+        await s.approveAndAssign(t, cls);
+        await _db
+            .collection('classes')
+            .doc(classId)
+            .update({'teacherEmail': FieldValue.delete()});
+        if (mounted) {
+          adminSnack(context, '${t.name} is now the class teacher of ${cls.className}');
+        }
+      } catch (_) {
+        // पुढच्या वेळी (snapshot / state बदलल्यावर) पुन्हा प्रयत्न होईल.
+      } finally {
+        _linking.remove(classId);
+      }
+    }
+  }
+
+  /// "Class teacher email" field चं validation.
+  String? _teacherEmailError(
+      AdminState s,
+      String? value,
+      String className,
+      String school,
+      ) {
+    final mail = (value ?? '').trim().toLowerCase();
+    if (mail.isEmpty) return null; // optional
+
+    if (!_emailRe.hasMatch(mail)) {
+      return 'Enter a valid email address.';
+    }
+
+    final newId = (className.trim().isNotEmpty && school.trim().isNotEmpty)
+        ? AuthService.classIdFor(school, className)
+        : '';
+
+    final t = _findTeacherByEmail(s, mail);
+
+    // Teacher अजून registered नाही -> pending म्हणून चालतो,
+    // फक्त हाच email दुसऱ्या class साठी आधीच pending नसावा.
+    if (t == null) {
+      final dup = _pending.entries.any((e) => e.value == mail && e.key != newId);
+      if (dup) return 'This email is already waiting for another class.';
+      return null;
+    }
+
+    // Teacher registered आहे: आधीच दुसऱ्या class ला असेल तर नको.
+    if (t.classId.isNotEmpty && t.classId != newId) {
+      final where = t.className.isEmpty ? 'another class' : t.className;
+      return '${t.name} is already assigned to $where. '
+          'Unassign from the Teachers page first.';
+    }
+
+    // या class ला आधीच दुसरा teacher आहे का.
+    if (newId.isNotEmpty) {
+      final other = s.otherTeacherOfClass(newId, t.uid);
+      if (other != null) {
+        return 'This class already has a class teacher (${other.name}).';
+      }
+    }
+    return null;
+  }
 
   Future<void> _addClass(BuildContext context) async {
     final s = AdminState.instance;
     final formKey = GlobalKey<FormState>();
     final name = TextEditingController();
+    final teacherEmail = TextEditingController();
     final school = TextEditingController(
       text: s.schoolName.isNotEmpty
           ? s.schoolName
@@ -29,9 +189,28 @@ class AdminClassesScreen extends StatelessWidget {
             key: formKey,
             child: Column(
               mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 dialogField(name, 'Class name', required: true, hint: 'e.g. Nursery A'),
                 dialogField(school, 'School name', required: true),
+                dialogField(
+                  teacherEmail,
+                  'Class teacher email (optional)',
+                  keyboard: TextInputType.emailAddress,
+                  hint: 'teacher@school.com',
+                  validator: (v) =>
+                      _teacherEmailError(s, v, name.text, school.text),
+                ),
+                const Padding(
+                  padding: EdgeInsets.only(bottom: 2),
+                  child: Text(
+                    'The teacher logs in with this email. If the teacher has '
+                        'not registered yet, the class stays "pending" and is '
+                        'linked automatically after the teacher registers in the '
+                        'Teacher app with this same email.',
+                    style: TextStyle(fontSize: 11, color: AdminColors.muted),
+                  ),
+                ),
               ],
             ),
           ),
@@ -52,16 +231,90 @@ class AdminClassesScreen extends StatelessWidget {
       ),
     );
 
-    if (ok == true) {
-      try {
-        await s.addClass(name.text, school.text);
-        if (context.mounted) adminSnack(context, 'Class added');
-      } catch (e) {
-        if (context.mounted) adminSnack(context, AdminState.errorText(e), error: true);
+
+    // Dialog बंद झाल्यावर values आधी वाचतो.
+    final className = name.text.trim();
+    final schoolName = school.text.trim();
+    final mail = teacherEmail.text.trim().toLowerCase();
+
+    // Dialog चं बंद होण्याचं animation संपल्यावरच controllers dispose करतो,
+    // नाहीतर TextFormField अजून वापरत असताना dispose होऊन error येतो.
+    Future.delayed(const Duration(milliseconds: 500), () {
+      name.dispose();
+      school.dispose();
+      teacherEmail.dispose();
+    });
+
+    if (ok != true) return;
+
+    // पायरी 1: Class बनवतो
+    String classId;
+    try {
+      classId = await s.addClass(className, schoolName);
+    } catch (e) {
+      if (context.mounted) adminSnack(context, AdminState.errorText(e), error: true);
+      return;
+    }
+
+    if (mail.isEmpty) {
+      if (context.mounted) adminSnack(context, 'Class added');
+      return;
+    }
+
+    // पायरी 2: Teacher ला class देतो
+    try {
+      final t = _findTeacherByEmail(s, mail);
+      if (t != null) {
+        // Registered आहे -> लगेच approve + assign.
+        final cls = AdminClass(
+          id: classId,
+          className: className,
+          schoolName: schoolName,
+          teacherName: '',
+          teacherUid: '',
+        );
+        await s.approveAndAssign(t, cls);
+        if (context.mounted) {
+          adminSnack(context, 'Class added and ${t.name} assigned as class teacher');
+        }
+      } else {
+        // Registered नाही -> email class वर pending म्हणून साठवतो.
+        await _db
+            .collection('classes')
+            .doc(classId)
+            .set({'teacherEmail': mail}, SetOptions(merge: true));
+        if (context.mounted) {
+          adminSnack(
+            context,
+            'Class added. $mail will be linked automatically after registering '
+                'in the Teacher app.',
+          );
+        }
+      }
+    } catch (e) {
+      if (context.mounted) {
+        adminSnack(
+          context,
+          'Class was added, but the teacher could not be assigned: '
+              '${AdminState.errorText(e)}',
+          error: true,
+        );
       }
     }
-    name.dispose();
-    school.dispose();
+  }
+
+  Future<void> _cancelPending(BuildContext context, AdminClass c) async {
+    try {
+      await _db
+          .collection('classes')
+          .doc(c.id)
+          .update({'teacherEmail': FieldValue.delete()});
+      if (context.mounted) adminSnack(context, 'Pending teacher removed');
+    } catch (e) {
+      if (context.mounted) {
+        adminSnack(context, AdminState.errorText(e), error: true);
+      }
+    }
   }
 
   Future<void> _delete(BuildContext context, AdminClass c) async {
@@ -193,8 +446,8 @@ class AdminClassesScreen extends StatelessWidget {
               if (s.classes.isEmpty)
                 const AdminCard(
                   child: EmptyState(
-                    'No classes yet. A class is created automatically when a '
-                        'teacher registers, or add one with the button above.',
+                    'No classes yet. Add one with the button above and '
+                        'optionally assign a teacher by email.',
                   ),
                 )
               else
@@ -227,11 +480,25 @@ class AdminClassesScreen extends StatelessWidget {
   }
 
   Widget _classCard(BuildContext context, AdminState s, AdminClass c) {
+    final teacherObj = s.teacherOfClass(c.id);
     final teacher = c.teacherName.isNotEmpty
         ? c.teacherName
-        : (s.teacherOfClass(c.id)?.name ?? '');
+        : (teacherObj?.name ?? '');
+    final teacherMail = teacherObj?.email ?? '';
+    final pendingMail = _pending[c.id] ?? '';
+    final isPending = teacher.isEmpty && pendingMail.isNotEmpty;
     final students = s.studentsOfClass(c.id).length;
     final pct = s.attendancePercent(s.todayKey, classId: c.id);
+
+    final Color statusColor = teacher.isNotEmpty
+        ? const Color(0xFF159B83)
+        : (isPending ? const Color(0xFFE39A35) : AdminColors.muted);
+    final IconData statusIcon = teacher.isNotEmpty
+        ? Icons.check_circle_outline_rounded
+        : (isPending ? Icons.hourglass_bottom_rounded : Icons.info_outline_rounded);
+    final String statusText = teacher.isNotEmpty
+        ? 'Class teacher assigned'
+        : (isPending ? 'Waiting for teacher to register' : 'Needs a class teacher');
 
     return Container(
       padding: const EdgeInsets.all(18),
@@ -338,21 +605,39 @@ class AdminClassesScreen extends StatelessWidget {
             Icons.badge_rounded,
             teacher.isEmpty ? 'No teacher assigned' : teacher,
           ),
+          if (teacherMail.isNotEmpty) ...[
+            const SizedBox(height: 7),
+            _line(Icons.email_outlined, teacherMail),
+          ],
+          if (isPending) ...[
+            const SizedBox(height: 7),
+            Row(
+              children: [
+                Expanded(child: _line(Icons.email_outlined, pendingMail)),
+                TextButton(
+                  onPressed: () => _cancelPending(context, c),
+                  style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                  ),
+                  child: const Text('Cancel', style: TextStyle(fontSize: 12)),
+                ),
+              ],
+            ),
+          ],
           const SizedBox(height: 7),
           Row(
             children: [
-              Icon(
-                teacher.isEmpty ? Icons.info_outline_rounded : Icons.check_circle_outline_rounded,
-                size: 14,
-                color: teacher.isEmpty ? AdminColors.muted : const Color(0xFF159B83),
-              ),
+              Icon(statusIcon, size: 14, color: statusColor),
               const SizedBox(width: 7),
-              Text(
-                teacher.isEmpty ? 'Needs a class teacher' : 'Class teacher assigned',
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w600,
-                  color: teacher.isEmpty ? AdminColors.muted : const Color(0xFF159B83),
+              Flexible(
+                child: Text(
+                  statusText,
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: statusColor,
+                  ),
                 ),
               ),
             ],

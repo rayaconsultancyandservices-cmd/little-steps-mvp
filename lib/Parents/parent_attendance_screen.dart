@@ -33,6 +33,10 @@ class _ParentAttendanceScreenState extends State<ParentAttendanceScreen> {
   static const _absentFg = Color(0xFFE0533D);
   static const _absentBg = Color(0xFFFFE7E5);
 
+  // नवीन: Holiday (सुट्टी) चा रंग — Present / Late / Absent पेक्षा वेगळा.
+  static const _holidayFg = Color(0xFF8066C8);
+  static const _holidayBg = Color(0xFFF1ECFB);
+
   /// याच्या खाली टक्केवारी गेली तर सूचना दाखवतो.
   static const int _lowLimit = 75;
 
@@ -77,6 +81,21 @@ class _ParentAttendanceScreenState extends State<ParentAttendanceScreen> {
 
   bool _valid(String s) => s == 'P' || s == 'L' || s == 'A';
 
+  static DateTime _dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
+
+  /// नवीन: सर्व सुट्ट्या { तारीख -> event }. Teacher ने पाठवलेलं 'Holiday'
+  /// circular (event date सह) आणि Teacher ने जोडलेला 'Holiday' event दोन्ही
+  /// AppState.events मध्ये येतात.
+  Map<DateTime, SchoolEvent> _holidays(AppState s) {
+    final map = <DateTime, SchoolEvent>{};
+    for (final e in s.events) {
+      if (e.category.trim().toLowerCase() == 'holiday') {
+        map.putIfAbsent(_dateOnly(e.date), () => e);
+      }
+    }
+    return map;
+  }
+
   static const _wd = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   static const _wdLetter = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
 
@@ -91,8 +110,14 @@ class _ParentAttendanceScreenState extends State<ParentAttendanceScreen> {
             builder: (context, _) {
               final s = AppState.instance;
 
+              // नवीन: सुट्टीच्या दिवशी Present / Absent मोजत नाही आणि दाखवतही नाही.
+              final holidays = _holidays(s);
+              final history = s.attendanceHistory
+                  .where((d) => !holidays.containsKey(_dateOnly(d.date)))
+                  .toList();
+
               // ----- या महिन्याची हजेरी -----
-              final days = s.attendanceHistory
+              final days = history
                   .where((d) =>
               d.date.year == _month.year &&
                   d.date.month == _month.month &&
@@ -107,7 +132,7 @@ class _ParentAttendanceScreenState extends State<ParentAttendanceScreen> {
 
               // ----- आतापर्यंतची एकूण हजेरी + streak -----
               final everything =
-              s.attendanceHistory.where((d) => _valid(d.status)).toList();
+              history.where((d) => _valid(d.status)).toList();
               final everAttended = everything
                   .where((d) => d.status == 'P' || d.status == 'L')
                   .length;
@@ -115,7 +140,7 @@ class _ParentAttendanceScreenState extends State<ParentAttendanceScreen> {
                   ? 0
                   : (everAttended * 100 ~/ everything.length);
               var streak = 0;
-              for (final d in s.attendanceHistory) {
+              for (final d in history) {
                 if (d.status == 'P' || d.status == 'L') {
                   streak++;
                 } else if (d.status == 'A') {
@@ -160,7 +185,7 @@ class _ParentAttendanceScreenState extends State<ParentAttendanceScreen> {
                             _lowBanner(percent),
                           ],
                           const SizedBox(height: 14),
-                          _calendar(s, byDay),
+                          _calendar(s, byDay, holidays),
                           const SizedBox(height: 8),
                           _legend(),
                           const SizedBox(height: 16),
@@ -543,7 +568,8 @@ class _ParentAttendanceScreenState extends State<ParentAttendanceScreen> {
     return null;
   }
 
-  Widget _calendar(AppState s, Map<int, AttendanceDay> byDay) {
+  Widget _calendar(AppState s, Map<int, AttendanceDay> byDay,
+      Map<DateTime, SchoolEvent> holidays) {
     final first = DateTime(_month.year, _month.month, 1);
     final daysInMonth = DateTime(_month.year, _month.month + 1, 0).day;
     final lead = first.weekday - 1; // Monday पासून सुरू
@@ -594,7 +620,7 @@ class _ParentAttendanceScreenState extends State<ParentAttendanceScreen> {
                   Expanded(
                     child: Padding(
                       padding: const EdgeInsets.all(2.5),
-                      child: _dayCell(slots[r + c], s, byDay, today),
+                      child: _dayCell(slots[r + c], s, byDay, holidays, today),
                     ),
                   ),
               ],
@@ -604,14 +630,16 @@ class _ParentAttendanceScreenState extends State<ParentAttendanceScreen> {
     );
   }
 
-  Widget _dayCell(
-      int? day, AppState s, Map<int, AttendanceDay> byDay, DateTime today) {
+  Widget _dayCell(int? day, AppState s, Map<int, AttendanceDay> byDay,
+      Map<DateTime, SchoolEvent> holidays, DateTime today) {
     if (day == null) {
       return const AspectRatio(aspectRatio: 1, child: SizedBox.shrink());
     }
     final date = DateTime(_month.year, _month.month, day);
-    final rec = byDay[day];
-    final leave = rec == null ? _leaveOn(s, date) : null;
+    // नवीन: सुट्टी असेल तर ती सर्वांत वर — जुना Present / Absent / रजा दाखवत नाही.
+    final holiday = holidays[date];
+    final rec = holiday != null ? null : byDay[day];
+    final leave = (rec == null && holiday == null) ? _leaveOn(s, date) : null;
     final weekend = date.weekday >= 6;
     final isToday = date == today;
     final future = date.isAfter(today);
@@ -619,7 +647,10 @@ class _ParentAttendanceScreenState extends State<ParentAttendanceScreen> {
     var bg = Colors.transparent;
     var fg = ParentColors.dark;
     Border? border;
-    if (rec != null) {
+    if (holiday != null) {
+      bg = _holidayFg;
+      fg = Colors.white;
+    } else if (rec != null) {
       bg = _fg(rec.status);
       fg = Colors.white;
     } else if (leave != null) {
@@ -651,12 +682,12 @@ class _ParentAttendanceScreenState extends State<ParentAttendanceScreen> {
       ),
     );
 
-    final tappable = rec != null || leave != null;
+    final tappable = rec != null || leave != null || holiday != null;
     return AspectRatio(
       aspectRatio: 1,
       child: tappable
           ? GestureDetector(
-        onTap: () => _openDay(date, rec, leave),
+        onTap: () => _openDay(date, rec, leave, holiday),
         behavior: HitTestBehavior.opaque,
         child: cell,
       )
@@ -700,6 +731,7 @@ class _ParentAttendanceScreenState extends State<ParentAttendanceScreen> {
           item(_presentFg, 'Present'),
           item(_lateFg, 'Late'),
           item(_absentFg, 'Absent'),
+          item(_holidayFg, 'Holiday'),
           item(ParentColors.tintStrong, 'Leave'),
           item(Colors.transparent, 'Today', outline: true),
         ],
@@ -708,7 +740,8 @@ class _ParentAttendanceScreenState extends State<ParentAttendanceScreen> {
   }
 
   // ---------- day details (bottom sheet) ----------
-  void _openDay(DateTime date, AttendanceDay? rec, LeaveRequest? leave) {
+  void _openDay(DateTime date, AttendanceDay? rec, LeaveRequest? leave,
+      [SchoolEvent? holiday]) {
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: Colors.white,
@@ -742,7 +775,55 @@ class _ParentAttendanceScreenState extends State<ParentAttendanceScreen> {
                 ),
               ),
               const SizedBox(height: 12),
-              if (rec != null) ...[
+              // नवीन: सुट्टीच्या दिवशी फक्त Holiday माहिती.
+              if (holiday != null) ...[
+                Container(
+                  padding:
+                  const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+                  decoration: BoxDecoration(
+                    color: _holidayBg,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.beach_access_rounded,
+                          size: 16, color: _holidayFg),
+                      SizedBox(width: 6),
+                      Text(
+                        'Holiday',
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w800,
+                          color: _holidayFg,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  holiday.title,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w800,
+                    color: ParentColors.dark,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  holiday.note.trim().isEmpty
+                      ? 'School is closed. No attendance on this day.'
+                      : holiday.note,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    height: 1.4,
+                    color: ParentColors.muted,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+              if (holiday == null && rec != null) ...[
                 Container(
                   padding:
                   const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
@@ -779,7 +860,7 @@ class _ParentAttendanceScreenState extends State<ParentAttendanceScreen> {
                   ),
                 ),
               ],
-              if (leave != null) ...[
+              if (holiday == null && leave != null) ...[
                 Container(
                   padding: const EdgeInsets.all(11),
                   decoration: BoxDecoration(

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:little_steps_mvp/Parents/parent_circulars_screen.dart';
+import 'package:little_steps_mvp/Parents/parent_consent_screen.dart';
 import 'package:little_steps_mvp/Parents/parent_child_profile_screen.dart';
 import 'package:little_steps_mvp/Parents/parent_diary_screen.dart';
 import 'package:little_steps_mvp/Parents/parent_fees_screen.dart';
@@ -108,6 +109,20 @@ class _ParentShellState extends State<ParentShell> {
 
   @override
   Widget build(BuildContext context) {
+    // नवीन: पहिल्या login ला Parent ने consent दिल्याशिवाय Home उघडत नाही.
+    return AnimatedBuilder(
+      animation: AppState.instance,
+      builder: (context, _) {
+        final c = AppState.instance.child;
+        if (c.id.isNotEmpty && !c.consentAnswered) {
+          return ParentConsentScreen(onLogout: _logout);
+        }
+        return _buildMain();
+      },
+    );
+  }
+
+  Widget _buildMain() {
     final pages = <Widget>[
       ParentHomeScreen(onNavigate: _openFromHome, onLogout: _logout),
       const ParentPhotosScreen(),

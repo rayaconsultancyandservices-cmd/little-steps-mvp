@@ -515,24 +515,9 @@ class _HomeScreenState extends State<HomeScreen> {
                 light: const Color(0xFFE8F0F3),
                 onTap: () => _go(6),
               ),
-              // नवीन: Fees — fees जोडणं / Paid करणं (Parent ला लगेच दिसतं)
-              _tile(
-                width: width,
-                icon: Icons.account_balance_wallet_rounded,
-                label: 'Fees',
-                color: const Color(0xFF2E9B5E),
-                light: const Color(0xFFE6F6EC),
-                onTap: () => _go(7),
-              ),
-              // नवीन: Events — Parent च्या Calendar मध्ये दिसणारे events
-              _tile(
-                width: width,
-                icon: Icons.event_rounded,
-                label: 'Events',
-                color: const Color(0xFFD5604B),
-                light: const Color(0xFFFFEDE9),
-                onTap: () => _go(8),
-              ),
+              // बदल (Step 4): Fees आणि Events चे tiles काढले. Figma नुसार fees चा
+              // हिशोब आणि holiday / event फक्त Admin टाकतो. Teacher ला events फक्त
+              // खाली "Upcoming Events" मध्ये वाचायला दिसतात.
               // नवीन: Leave — Parent चे रजेचे अर्ज (बाकी अर्जांची संख्या दिसते)
               _tile(
                 width: width,

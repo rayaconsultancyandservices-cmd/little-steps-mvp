@@ -7,9 +7,9 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../state/app_state.dart';
 import '../widgets/page_app_bar.dart';
-import 'attendance_screen.dart' show AddStudentSheet;
 
 /// Teacher साठी: एका मुलाचं पूर्ण profile (read-only).
+/// बदल (Step 3): Edit आणि Delete काढलं. मुलाची माहिती बदलणं / काढणं फक्त Admin करतो.
 ///
 /// Teacher app चे रंग/style तेच वापरले आहेत (attendance_screen प्रमाणे):
 /// background 0xFFF4F8F7, primary 0xFF168C80, dark 0xFF183B45, muted 0xFF84918D.
@@ -53,7 +53,6 @@ class _StudentProfileScreenState extends State<StudentProfileScreen> {
   String? _feesError;
   List<FeeItem> _fees = [];
 
-  bool _busy = false; // edit / delete चालू असताना दुहेरी टॅप थांबवतो
 
   @override
   void initState() {
@@ -149,99 +148,6 @@ class _StudentProfileScreenState extends State<StudentProfileScreen> {
     await Future.wait([_loadAttendance(), _loadFees()]);
   }
 
-  // ---------------------------------------------------------------
-  // EDIT / DELETE  (Attendance च्या long-press सारखंच, तोच फॉर्म आणि तेच AppState)
-  // ---------------------------------------------------------------
-  Future<void> _editStudent() async {
-    final previous = _child;
-    if (previous == null || _busy) return;
-
-    final updated = await showModalBottomSheet<ChildInfo>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (_) =>
-          AddStudentSheet(nextRoll: previous.rollNo, existing: previous),
-    );
-    if (updated == null || !mounted) return;
-
-    setState(() => _busy = true);
-    try {
-      await AppState.instance.updateStudent(updated, previous: previous);
-      if (!mounted) return;
-      final newMail = updated.parentEmail.trim().toLowerCase();
-      final mailChanged = previous.parentEmail.trim().toLowerCase() != newMail;
-      _snack(
-        mailChanged
-            ? '${updated.name} updated. Old parent login removed; '
-            'new parent can login with $newMail'
-            : '${updated.name} updated.',
-      );
-    } catch (e) {
-      if (!mounted) return;
-      _snack('Could not update student: $e');
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  Future<void> _deleteStudent() async {
-    final child = _child;
-    if (child == null || _busy) return;
-
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Text(
-          'Remove student?',
-          style: TextStyle(fontWeight: FontWeight.w800),
-        ),
-        content: Text(
-          '${child.name} will be removed from the class. '
-              'Their fees, attendance and chat records will also be deleted, '
-              'and the parent will no longer be able to see this child.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: red,
-              foregroundColor: Colors.white,
-            ),
-            child: const Text('Remove'),
-          ),
-        ],
-      ),
-    );
-    if (ok != true || !mounted) return;
-
-    final messenger = ScaffoldMessenger.of(context);
-    final nav = Navigator.of(context);
-    setState(() => _busy = true);
-    try {
-      await AppState.instance.deleteStudent(child.id);
-      messenger
-        ..hideCurrentSnackBar()
-        ..showSnackBar(SnackBar(
-          content: Text('${child.name} removed.'),
-          behavior: SnackBarBehavior.floating,
-        ));
-      if (nav.canPop()) nav.pop(); // यादीकडे परत
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _busy = false);
-      _snack('Could not remove student: $e');
-    }
-  }
-
   List<_AttEntry> get _recent {
     final from = DateTime.now().subtract(const Duration(days: _summaryDays));
     return _att.where((a) => !a.date.isBefore(from)).toList();
@@ -299,21 +205,6 @@ class _StudentProfileScreenState extends State<StudentProfileScreen> {
         title: 'Student Profile',
         subtitle: AppState.instance.className,
         onBack: () => Navigator.of(context).maybePop(),
-        actions: child == null
-            ? null
-            : [
-          IconButton(
-            tooltip: 'Edit student',
-            onPressed: _busy ? null : _editStudent,
-            icon: const Icon(Icons.edit_rounded, color: primary),
-          ),
-          IconButton(
-            tooltip: 'Remove student',
-            onPressed: _busy ? null : _deleteStudent,
-            icon: const Icon(Icons.delete_outline_rounded, color: red),
-          ),
-          const SizedBox(width: 4),
-        ],
       ),
       body: child == null
           ? _buildNotFound()

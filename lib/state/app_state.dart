@@ -225,6 +225,8 @@ class ChildInfo {
     this.parentEmail = '',
     this.classId = '',
     this.facePhoto = '',
+    this.consentFace,
+    this.consentPhotos,
   });
 
   /// Firestore load होण्यापूर्वी (किंवा parent link नसताना) वापरला जाणारा रिकामा child.
@@ -256,6 +258,10 @@ class ChildInfo {
       parentEmail: (d['parentEmail'] ?? '') as String,
       classId: (d['classId'] ?? '') as String,
       facePhoto: (d['facePhoto'] ?? '') as String,
+      // नवीन: Parent ने पहिल्या login ला दिलेली consent (अजून दिली नसेल तर null).
+      consentFace: d['consentFace'] is bool ? d['consentFace'] as bool : null,
+      consentPhotos:
+      d['consentPhotos'] is bool ? d['consentPhotos'] as bool : null,
       pickupNote: (d['pickupNote'] ?? '') as String,
       contacts: [
         for (final c in rawContacts)
@@ -284,6 +290,10 @@ class ChildInfo {
     // नवीन: AI attendance scan साठी मुलाचा एक चेहऱ्याचा फोटो (base64).
     // रिकामा असेल तर पाठवत नाही, म्हणजे Teacher ने edit केल्यावर तो पुसला जात नाही.
     if (facePhoto.isNotEmpty) 'facePhoto': facePhoto,
+    // Consent Admin च्या edit मधून बदलत नाही (null असेल तर पाठवतच नाही), म्हणजे
+    // Admin ने मूल edit केलं तरी Parent ने दिलेली consent पुसली जात नाही.
+    if (consentFace != null) 'consentFace': consentFace,
+    if (consentPhotos != null) 'consentPhotos': consentPhotos,
   };
 
   final String id;
@@ -302,6 +312,35 @@ class ChildInfo {
 
   /// 'data:image/jpeg;base64,...' — AI scan साठी reference face photo (नसेल तर '').
   final String facePhoto;
+
+  /// नवीन: Parent consent. null = Parent ने अजून उत्तर दिलेलं नाही.
+  /// consentFace   = AI face recognition (हजेरी) ला परवानगी.
+  /// consentPhotos = मुलाचे फोटो पाठवायला / शेअर करायला परवानगी.
+  final bool? consentFace;
+  final bool? consentPhotos;
+
+  /// दोन्ही प्रश्नांची उत्तरं दिली आहेत का (Yes किंवा No).
+  bool get consentAnswered => consentFace != null && consentPhotos != null;
+
+  /// local copy (consent सेव्ह झाल्यावर screen लगेच बदलण्यासाठी).
+  ChildInfo withConsent({required bool face, required bool photos}) => ChildInfo(
+    id: id,
+    name: name,
+    className: className,
+    rollNo: rollNo,
+    dob: dob,
+    bloodGroup: bloodGroup,
+    gender: gender,
+    allergyNote: allergyNote,
+    parentName: parentName,
+    contacts: contacts,
+    pickupNote: pickupNote,
+    parentEmail: parentEmail,
+    classId: classId,
+    facePhoto: facePhoto,
+    consentFace: face,
+    consentPhotos: photos,
+  );
 
   String get firstName => name.split(' ').first;
   String get parentFirstName => parentName.split(' ').first;
@@ -519,7 +558,7 @@ class AppState extends ChangeNotifier {
     await _cancelAll();
     try {
       final udoc = await _db.collection('users').doc(user.uid).get();
-      if (!udoc.exists) return 'Profile not found. Please register again.';
+      if (!udoc.exists) return 'Profile not found. Please contact the school Admin.';
       final u = udoc.data()!;
 
       final pendingRole = (u['role'] ?? '') as String;
@@ -528,12 +567,19 @@ class AppState extends ChangeNotifier {
             'Please try again after the school approves you.';
       }
 
+      // नवीन: Approve झालं तरी Admin ने class दिली नसेल तर Teacher आत जाऊ शकत नाही.
+      if (pendingRole == 'teacher' &&
+          ((u['classId'] ?? '') as String).trim().isEmpty) {
+        return 'Your account is approved, but the school Admin has not '
+            'assigned a class to you yet. Please contact the school Admin.';
+      }
+
       uid = user.uid;
       role = pendingRole;
       classId = (u['classId'] ?? '') as String;
 
       if (role == 'teacher') {
-        await _ensureClassDoc(u);
+        // नवीन flow: class doc Teacher बनवत नाही (फक्त Admin बनवतो).
         teacherName = (u['name'] ?? 'Teacher') as String;
         className = (u['className'] ?? '') as String;
         schoolName = (u['schoolName'] ?? '') as String;
@@ -565,24 +611,6 @@ class AppState extends ChangeNotifier {
         }
       }
       return 'Could not load data: $e';
-    }
-  }
-
-  /// Approve नंतर `classes/{classId}` नसेल तर बनवतो (Parent app ला teacher/class नाव दिसावं म्हणून).
-  Future<void> _ensureClassDoc(Map<String, dynamic> u) async {
-    if (classId.isEmpty) return;
-    try {
-      final ref = _db.collection('classes').doc(classId);
-      final snap = await ref.get();
-      if (snap.exists) return;
-      await ref.set({
-        'teacherName': (u['name'] ?? '') as String,
-        'className': (u['className'] ?? '') as String,
-        'schoolName': (u['schoolName'] ?? '') as String,
-        'teacherUid': uid,
-      }, SetOptions(merge: true));
-    } catch (e) {
-      lastError = '$e';
     }
   }
 
@@ -992,102 +1020,8 @@ class AppState extends ChangeNotifier {
   // TEACHER ACTIONS
   // =================================================================
 
-  /// Teacher: नवीन विद्यार्थी जोडतो. `parentEmail` वरून parent app मध्ये link होतं.
-  Future<void> addStudent(ChildInfo s) async {
-    await _db.collection('students').add(
-      ChildInfo(
-        name: s.name,
-        className: className,
-        rollNo: s.rollNo,
-        dob: s.dob,
-        bloodGroup: s.bloodGroup,
-        gender: s.gender,
-        allergyNote: s.allergyNote,
-        parentName: s.parentName,
-        parentEmail: s.parentEmail,
-        classId: classId,
-        pickupNote: s.pickupNote,
-        contacts: s.contacts,
-      ).toMap(),
-    );
-  }
-
-  /// Teacher: विद्यार्थ्याची माहिती बदलतो.
-  /// `previous` दिला आणि parent email बदलला असेल तर जुन्या parent चं login
-  /// profile काढतो (नवीन email ने parent पुन्हा login केल्यावर आपोआप link होतो).
-  Future<void> updateStudent(ChildInfo s, {ChildInfo? previous}) async {
-    // classId नेहमी teacher चा स्वतःचा class ठेवतो (rules: class बदलता येत नाही).
-    await _db
-        .collection('students')
-        .doc(s.id)
-        .update({...s.toMap(), 'classId': classId});
-
-    if (previous == null) return;
-    final oldMail = previous.parentEmail.trim().toLowerCase();
-    final newMail = s.parentEmail.trim().toLowerCase();
-    if (oldMail == newMail) return;
-
-    final refs = await _parentProfileRefs(s.id);
-    for (final r in refs) {
-      await r.delete();
-    }
-  }
-
-  /// या विद्यार्थ्याशी जोडलेले parent login profiles (`users` docs).
-  /// Rules नुसार Teacher फक्त आपल्या class चे `role == parent` profiles वाचू/काढू शकतो.
-  Future<List<DocumentReference<Map<String, dynamic>>>> _parentProfileRefs(
-      String studentId) async {
-    try {
-      final q = await _db
-          .collection('users')
-          .where('role', isEqualTo: 'parent')
-          .where('classId', isEqualTo: classId)
-          .where('studentId', isEqualTo: studentId)
-          .get();
-      return q.docs.map((d) => d.reference).toList();
-    } catch (e) {
-      // Rules अजून deploy झाले नसतील तरी विद्यार्थी delete / edit अडू नये.
-      lastError = '$e';
-      return const [];
-    }
-  }
-
-  /// विद्यार्थी + त्याचा संबंधित data (fees, receipts, attendance, chat) एकत्र काढतो.
-  /// Student document शेवटी काढतो (rules त्याच्या class वरून बाकीची परवानगी तपासतात).
-  Future<void> deleteStudent(String studentId) async {
-    final sRef = _db.collection('students').doc(studentId);
-    final refs = <DocumentReference<Map<String, dynamic>>>[];
-
-    for (final sub in const ['fees', 'receipts']) {
-      final q = await sRef.collection(sub).get();
-      refs.addAll(q.docs.map((d) => d.reference));
-    }
-    final att = await _db
-        .collection('attendance')
-        .where('classId', isEqualTo: classId)
-        .where('studentId', isEqualTo: studentId)
-        .get();
-    refs.addAll(att.docs.map((d) => d.reference));
-
-    // बदल: या मुलाच्या parent चं login profile सुद्धा काढतो, म्हणजे त्या parent ला
-    // पुढच्या login ला "Could not load data" error येत नाही.
-    refs.addAll(await _parentProfileRefs(studentId));
-
-    final tRef = _db.collection('threads').doc(studentId);
-    final msgs = await tRef.collection('messages').get();
-    refs.addAll(msgs.docs.map((d) => d.reference));
-    // thread document आहे का हे memory मधून बघतो (नसलेल्या doc ला get केलं तर rules error देतात).
-    if (_threadMetas.containsKey(studentId)) refs.add(tRef);
-
-    for (var i = 0; i < refs.length; i += 400) {
-      final batch = _db.batch();
-      for (final r in refs.skip(i).take(400)) {
-        batch.delete(r);
-      }
-      await batch.commit();
-    }
-    await sRef.delete();
-  }
+  // बदल (Step 7): मुलं जोडणं / बदलणं / काढणं (addStudent, updateStudent,
+  // deleteStudent) हे Teacher चं काम नाही — फक्त Admin करतो (AdminState मध्ये आहे).
 
   /// `statuses` चे keys = studentId, values = 'P' / 'A' / 'L'.
   Future<void> saveAttendance({
@@ -1116,6 +1050,31 @@ class AppState extends ChangeNotifier {
         });
       });
       await batch.commit();
+    }
+  }
+
+  /// नवीन: Parent पहिल्या login ला consent देतो (Face recognition + Photos).
+  /// यशस्वी झाल्यास null, नाहीतर error text. students/{id} मध्ये फक्त
+  /// consentFace / consentPhotos / consentAt लिहितो (Firestore rules फक्त हेच देतात).
+  Future<String?> saveParentConsent({
+    required bool face,
+    required bool photos,
+  }) async {
+    if (!isParent || child.id.isEmpty) return 'Please login again.';
+    try {
+      await _db.collection('students').doc(child.id).update({
+        'consentFace': face,
+        'consentPhotos': photos,
+        'consentAt': Timestamp.now(),
+      });
+      child = child.withConsent(face: face, photos: photos);
+      notifyListeners();
+      return null;
+    } catch (e) {
+      if (e is FirebaseException && e.code == 'permission-denied') {
+        return 'Could not save. Please check your internet and try again.';
+      }
+      return 'Could not save your choice: $e';
     }
   }
 
@@ -1156,6 +1115,8 @@ class AppState extends ChangeNotifier {
         audience.add('all');
       } else {
         for (final s in students) {
+          // नवीन: ज्या मुलाच्या Parent ने photos ला "No" म्हटलं त्याला tag होत नाही.
+          if (s.consentPhotos == false) continue;
           if (s.matches(p.tags)) audience.add(s.id);
         }
       }
@@ -1277,14 +1238,7 @@ class AppState extends ChangeNotifier {
     await batch.commit();
   }
 
-  Future<void> addEvent(SchoolEvent e) async {
-    await _classCol('events').add({
-      'date': Timestamp.fromDate(e.date),
-      'title': e.title,
-      'category': e.category,
-      'note': e.note,
-    });
-  }
+  // बदल (Step 7): addEvent काढलं — Events / Holidays फक्त Admin टाकतो.
 
   // =================================================================
   // LEAVE (Parent अर्ज करतो → Teacher approve / decline)
@@ -1365,29 +1319,10 @@ class AppState extends ChangeNotifier {
     });
   }
 
-  /// Teacher ने स्वतः जोडलेले events (edit / delete साठी). Circular चे events यात नाहीत.
-  List<SchoolEvent> get classEvents {
-    final list = [..._extraEvents]..sort((a, b) => a.date.compareTo(b.date));
-    return list;
-  }
-
-  Future<void> updateEvent(SchoolEvent e) async {
-    if (e.id.isEmpty) return;
-    await _classCol('events').doc(e.id).update({
-      'date': Timestamp.fromDate(e.date),
-      'title': e.title,
-      'category': e.category,
-      'note': e.note,
-    });
-  }
-
-  Future<void> deleteEvent(String eventId) async {
-    if (eventId.isEmpty) return;
-    await _classCol('events').doc(eventId).delete();
-  }
+  // बदल (Step 7): classEvents / updateEvent / deleteEvent काढले (Events फक्त Admin बघतो आणि बदलतो).
 
   // =================================================================
-  // FEES (Teacher)
+  // FEES (Teacher ला फक्त वाचन — पैशाचे बदल फक्त Admin करतो)
   // =================================================================
   FeeItem _feeFromDoc(QueryDocumentSnapshot<Map<String, dynamic>> d) {
     final x = d.data();
@@ -1434,121 +1369,8 @@ class AppState extends ChangeNotifier {
     ];
   }
 
-  /// Class च्या सर्व मुलांच्या fees: studentId -> fees.
-  Future<Map<String, List<FeeItem>>> loadClassFees() async {
-    final ids = [for (final s in students) s.id];
-    final lists = await Future.wait([for (final id in ids) loadStudentFees(id)]);
-    return {for (var i = 0; i < ids.length; i++) ids[i]: lists[i]};
-  }
-
-  /// एकच fee अनेक मुलांना (whole class) जोडतो.
-  Future<void> addFeeForStudents(
-      List<String> studentIds,
-      String title,
-      int amount,
-      DateTime? dueDate, {
-        bool upcoming = false,
-      }) async {
-    final order = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-    // Firestore batch मर्यादा 500 — म्हणून 400 च्या तुकड्यात.
-    for (var i = 0; i < studentIds.length; i += 400) {
-      final chunk = studentIds.skip(i).take(400);
-      final batch = _db.batch();
-      for (final id in chunk) {
-        batch.set(_db.collection('students').doc(id).collection('fees').doc(), {
-          'title': title,
-          'amount': amount,
-          'status': upcoming ? 'upcoming' : 'due',
-          'dueDate': dueDate == null ? null : Timestamp.fromDate(dueDate),
-          'order': order,
-        });
-      }
-      await batch.commit();
-    }
-  }
-
-  /// Fee बदलतो. आधीच 'paid' असलेल्या fee ची status बदलत नाही.
-  Future<void> updateFee(
-      String studentId,
-      String feeId, {
-        required String title,
-        required int amount,
-        DateTime? dueDate,
-        bool upcoming = false,
-      }) async {
-    final ref = _db
-        .collection('students')
-        .doc(studentId)
-        .collection('fees')
-        .doc(feeId);
-    final snap = await ref.get();
-    final wasPaid = snap.data()?['status'] == 'paid';
-    await ref.update({
-      'title': title,
-      'amount': amount,
-      'dueDate': dueDate == null ? null : Timestamp.fromDate(dueDate),
-      if (!wasPaid) 'status': upcoming ? 'upcoming' : 'due',
-    });
-  }
-
-  /// Fee delete; तिच्याशी जोडलेल्या receipts सुद्धा काढतो.
-  Future<void> deleteFee(String studentId, String feeId) async {
-    final sRef = _db.collection('students').doc(studentId);
-    final rec =
-    await sRef.collection('receipts').where('feeId', isEqualTo: feeId).get();
-    final batch = _db.batch();
-    for (final d in rec.docs) {
-      batch.delete(d.reference);
-    }
-    batch.delete(sRef.collection('fees').doc(feeId));
-    await batch.commit();
-  }
-
-  Future<void> addFee(
-      String studentId,
-      String title,
-      int amount,
-      DateTime? dueDate, {
-        int order = 0,
-        bool upcoming = false,
-      }) async {
-    await _db.collection('students').doc(studentId).collection('fees').add({
-      'title': title,
-      'amount': amount,
-      'status': upcoming ? 'upcoming' : 'due',
-      'dueDate': dueDate == null ? null : Timestamp.fromDate(dueDate),
-      'order': order,
-    });
-  }
-
-  /// Fee भरली गेली: status = paid + receipt तयार.
-  Future<void> markFeePaid(
-      String studentId, FeeItem fee, String mode) async {
-    final ref = _db.collection('students').doc(studentId);
-    final batch = _db.batch();
-    batch.update(ref.collection('fees').doc(fee.id), {'status': 'paid'});
-    batch.set(ref.collection('receipts').doc(), {
-      'title': fee.title,
-      'amount': fee.amount,
-      'date': Timestamp.fromDate(DateTime.now()),
-      'mode': mode,
-      'feeId': fee.id,
-    });
-    await batch.commit();
-  }
-
-  /// नवीन: चुकून "paid" केलेली fee परत "due" करतो (receipt सुद्धा काढतो).
-  Future<void> markFeeUnpaid(String studentId, FeeItem fee) async {
-    final ref = _db.collection('students').doc(studentId);
-    final rec =
-    await ref.collection('receipts').where('feeId', isEqualTo: fee.id).get();
-    final batch = _db.batch();
-    for (final d in rec.docs) {
-      batch.delete(d.reference);
-    }
-    batch.update(ref.collection('fees').doc(fee.id), {'status': 'due'});
-    await batch.commit();
-  }
+  // बदल (Step 7): loadClassFees, addFeeForStudents, updateFee, deleteFee, addFee,
+  // markFeePaid, markFeeUnpaid काढले. Fees चा हिशोब फक्त Admin ठेवतो.
 
   // =================================================================
   // CHAT  (Teacher ↔ Parent एकच thread; thread key = studentId)

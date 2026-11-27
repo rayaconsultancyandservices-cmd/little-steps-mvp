@@ -5,7 +5,6 @@ import 'package:flutter/services.dart';
 
 import '../config/app_config.dart';
 import '../services/auth_service.dart';
-import 'register_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -837,46 +836,19 @@ class _LoginScreenState extends State<LoginScreen>
           ),
         ),
         const SizedBox(height: 2),
-        if (isParent)
-          const Padding(
-            padding: EdgeInsets.only(top: 8),
-            child: Text(
-              'Parent account is created by the school office.',
-              textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 12, color: muted),
-            ),
-          )
-        else
-          Wrap(
-            crossAxisAlignment: WrapCrossAlignment.center,
-            children: [
-              const Text(
-                'New teacher?',
-                style: TextStyle(fontSize: 12.5, color: muted),
-              ),
-              TextButton(
-                onPressed: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => const RegisterScreen()),
-                  );
-                },
-                style: TextButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(horizontal: 6),
-                  minimumSize: const Size(0, 30),
-                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                ),
-                child: const Text(
-                  'Create Account',
-                  style: TextStyle(
-                    fontSize: 13,
-                    color: primary,
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-              ),
-            ],
+        // बदल: Teacher आता स्वतः account बनवू शकत नाही ("Create Account" काढलं).
+        // Account school Admin बनवतो आणि invite email पाठवतो (Parent सारखाच संदेश).
+        Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: Text(
+            isParent
+                ? 'Parent account is created by the school office.'
+                : 'Teacher account is created by the school Admin. '
+                'Please check your email for the invite.',
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 12, color: muted),
           ),
+        ),
       ],
     );
   }

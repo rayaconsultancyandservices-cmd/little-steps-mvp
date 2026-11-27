@@ -1,6 +1,3 @@
-import 'dart:async';
-
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -14,7 +11,7 @@ import '../widgets/page_app_bar.dart';
 // Home वरच्या bell ने उघडतो. यादी live data वरून तयार होते:
 //  - Parents चे न वाचलेले messages
 //  - रजेचे pending अर्ज (Approve / Decline बाकी)
-//  - Parent ने पाठवलेल्या payment requests (UTR verify बाकी)
+//  (बदल Step 5: payment requests ची सूचना काढली — पैशाचा हिशोब फक्त Admin बघतो)
 //  - आजची हजेरी अजून भरलेली नाही
 //
 // Features: unread badge (Home bell वर), Mark all read, swipe करून काढणे
@@ -27,10 +24,9 @@ const Color _dark = Color(0xFF183B45);
 const Color _muted = Color(0xFF82918D);
 const Color _red = Color(0xFFE36B61);
 const Color _orange = Color(0xFFD99437);
-const Color _green = Color(0xFF269B73);
 const Color _blue = Color(0xFF4786C7);
 
-enum TeacherNotifKind { messages, leave, payment, attendance }
+enum TeacherNotifKind { messages, leave, attendance }
 
 class _KindMeta {
   const _KindMeta(this.label, this.icon, this.color);
@@ -45,8 +41,6 @@ const Map<TeacherNotifKind, _KindMeta> _meta = {
   _KindMeta('Messages', Icons.chat_bubble_rounded, _blue),
   TeacherNotifKind.leave:
   _KindMeta('Leave', Icons.event_note_rounded, _orange),
-  TeacherNotifKind.payment:
-  _KindMeta('Fees', Icons.currency_rupee_rounded, _green),
   TeacherNotifKind.attendance:
   _KindMeta('Attendance', Icons.fact_check_rounded, _red),
 };
@@ -62,64 +56,11 @@ class TeacherNotifItem {
   final TeacherNotifKind kind;
   final String text;
 
-  /// MainShell चा tab: 1 Attendance, 5 Messages, 7 Fees, 9 Leave
+  /// MainShell चा tab: 1 Attendance, 5 Messages, 9 Leave
   final int tab;
 
   /// Read / clear ची नोंद ठेवण्यासाठी unique key.
   final String key;
-}
-
-/// Parent ची "submitted" payment request (students/{id}/payments/{id}).
-class _PayReq {
-  const _PayReq({
-    required this.id,
-    required this.studentName,
-    required this.title,
-    required this.amount,
-    required this.utr,
-    required this.createdAt,
-  });
-
-  final String id;
-  final String studentName;
-  final String title;
-  final int amount;
-  final String utr;
-  final DateTime createdAt;
-
-  factory _PayReq.fromDoc(
-      String studentName, QueryDocumentSnapshot<Map<String, dynamic>> d) {
-    final x = d.data();
-    final ts = x['createdAt'];
-    final amt = x['amount'];
-    return _PayReq(
-      id: d.id,
-      studentName: studentName,
-      title: (x['title'] ?? '').toString(),
-      amount: amt is num ? amt.toInt() : 0,
-      utr: (x['utr'] ?? '').toString(),
-      createdAt: ts is Timestamp ? ts.toDate() : DateTime.now(),
-    );
-  }
-}
-
-String _money(int amount) {
-  final s = amount.abs().toString();
-  String r;
-  if (s.length <= 3) {
-    r = s;
-  } else {
-    final last3 = s.substring(s.length - 3);
-    var rest = s.substring(0, s.length - 3);
-    final parts = <String>[];
-    while (rest.length > 2) {
-      parts.insert(0, rest.substring(rest.length - 2));
-      rest = rest.substring(0, rest.length - 2);
-    }
-    if (rest.isNotEmpty) parts.insert(0, rest);
-    r = '${parts.join(',')},$last3';
-  }
-  return '₹$r';
 }
 
 // =====================================================================
@@ -130,7 +71,6 @@ class TeacherNotifStore extends ChangeNotifier {
 
   static final TeacherNotifStore instance = TeacherNotifStore._();
 
-  List<_PayReq> _pay = [];
   Set<String> _read = {};
   Set<String> _gone = {};
   String _prefsFor = '';
@@ -138,10 +78,6 @@ class TeacherNotifStore extends ChangeNotifier {
   int _lastStudents = -1;
   bool _attached = false;
   bool _busy = false;
-  Timer? _timer;
-
-  /// Payment requests लोड न झाल्या (Firestore rules नसतील) तर true.
-  bool payFailed = false;
 
   static String _readKey(String uid) => 'teacher_notif_read_$uid';
   static String _goneKey(String uid) => 'teacher_notif_gone_$uid';
@@ -151,8 +87,6 @@ class TeacherNotifStore extends ChangeNotifier {
     if (_attached) return;
     _attached = true;
     AppState.instance.addListener(_onApp);
-    // Payment requests दर 10 मिनिटांनी पुन्हा तपासतो (reads वाचवण्यासाठी जास्त वेळा नाही).
-    _timer = Timer.periodic(const Duration(minutes: 10), (_) => refresh());
     refresh();
   }
 
@@ -161,7 +95,7 @@ class TeacherNotifStore extends ChangeNotifier {
     if (s.uid != _lastUid || s.students.length != _lastStudents) refresh();
   }
 
-  /// Parent च्या payment requests पुन्हा घेतो (प्रत्येक मुलाच्या `payments` मधून).
+  /// Read / cleared ची नोंद (या फोनमधली) तयार ठेवतो.
   Future<void> refresh() async {
     if (_busy) return;
     _busy = true;
@@ -171,50 +105,17 @@ class TeacherNotifStore extends ChangeNotifier {
       _lastStudents = s.students.length;
 
       if (s.uid.isEmpty || !s.isTeacher) {
-        _pay = [];
         _read = {};
         _gone = {};
         _prefsFor = '';
-        payFailed = false;
         notifyListeners();
         return;
       }
 
       await _loadPrefs(s.uid);
-
-      final students = List<ChildInfo>.of(s.students);
-      final results = await Future.wait([
-        for (final st in students) _payFor(st),
-      ]);
-      final found = <_PayReq>[];
-      var failed = false;
-      for (final r in results) {
-        if (r == null) {
-          failed = true;
-        } else {
-          found.addAll(r);
-        }
-      }
-      found.sort((a, b) => b.createdAt.compareTo(a.createdAt));
-      _pay = found;
-      payFailed = failed;
       notifyListeners();
     } finally {
       _busy = false;
-    }
-  }
-
-  Future<List<_PayReq>?> _payFor(ChildInfo st) async {
-    try {
-      final snap = await FirebaseFirestore.instance
-          .collection('students')
-          .doc(st.id)
-          .collection('payments')
-          .where('status', isEqualTo: 'submitted')
-          .get();
-      return [for (final d in snap.docs) _PayReq.fromDoc(st.name, d)];
-    } catch (_) {
-      return null;
     }
   }
 
@@ -274,17 +175,6 @@ class TeacherNotifStore extends ChangeNotifier {
             '${l.days > 1 ? ' (${l.days} days)' : ''} is waiting for your decision.',
         tab: 9,
         key: 'leave_${l.id}',
-      ));
-    }
-
-    for (final p in _pay.take(8)) {
-      out.add(TeacherNotifItem(
-        kind: TeacherNotifKind.payment,
-        text: '${p.studentName} · parent sent a payment request '
-            '${_money(p.amount)}${p.title.isEmpty ? '' : ' for ${p.title}'} '
-            '(UTR ${p.utr}). Please verify.',
-        tab: 7,
-        key: 'pay_${p.id}',
       ));
     }
 
@@ -388,7 +278,7 @@ class _TeacherNotificationScreenState extends State<TeacherNotificationScreen> {
         ),
         content: const Text(
           'They will be removed from this list. Your pending work '
-              '(leave, fees, messages) stays in its own screen.',
+              '(leave, messages) stays in its own screen.',
           style: TextStyle(fontSize: 13, height: 1.5, color: _muted),
         ),
         actions: [
@@ -508,15 +398,6 @@ class _TeacherNotificationScreenState extends State<TeacherNotificationScreen> {
                           ),
                           const SizedBox(height: 12),
                         ],
-                        if (store.payFailed)
-                          const Padding(
-                            padding: EdgeInsets.only(bottom: 10),
-                            child: Text(
-                              'Payment requests could not be loaded. '
-                                  'Please publish the latest Firestore rules.',
-                              style: TextStyle(fontSize: 11, color: _red),
-                            ),
-                          ),
                         if (all.isEmpty)
                           _empty()
                         else if (shown.isEmpty)
@@ -567,7 +448,7 @@ class _TeacherNotificationScreenState extends State<TeacherNotificationScreen> {
         ),
         SizedBox(height: 4),
         Text(
-          'Leave requests, parent messages, payment requests\n'
+          'Leave requests, parent messages\n'
               'and attendance reminders will appear here.',
           textAlign: TextAlign.center,
           style: TextStyle(fontSize: 11.5, height: 1.5, color: _muted),

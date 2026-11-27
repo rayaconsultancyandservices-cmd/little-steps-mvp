@@ -25,8 +25,6 @@ class _Draft {
     required this.title,
     required this.message,
     required this.category,
-    required this.audience,
-    required this.chosen,
     required this.eventDate,
     required this.attachment,
     this.attachmentBytes,
@@ -40,8 +38,6 @@ class _Draft {
   final String title;
   final String message;
   final String category;
-  final int audience;
-  final Set<String> chosen;
   final DateTime? eventDate;
   final String? attachment;
   final Uint8List? attachmentBytes;
@@ -76,12 +72,6 @@ class _CircularScreenState extends State<CircularScreen> {
   static const Color _dark = Color(0xFF24313D);
   static const Color _muted = Color(0xFF7B8794);
   static const Color _danger = Color(0xFFE5484D);
-
-  // dummy class counts काढले: teacher चा स्वतःचा class + खऱ्या students ची संख्या.
-  Map<String, int> get _classFamilies => {
-    if (AppState.instance.className.isNotEmpty)
-      AppState.instance.className: AppState.instance.totalFamilies,
-  };
 
   String get _myClass => AppState.instance.className.isEmpty
       ? 'My Class'
@@ -154,8 +144,9 @@ class _CircularScreenState extends State<CircularScreen> {
     ),
   ];
 
-  int _audience = 0;
-  final Set<String> _chosen = {};
+  // बदल (Step 8): Teacher चं circular फक्त तिच्या स्वतःच्या class च्या पालकांना जातं.
+  // "Whole school" आणि "Choose classes" फक्त Admin पाठवतो (Admin -> Circulars).
+  // म्हणून audience निवडण्याचे पर्याय (_audience / _chosen) काढले.
 
   String _category = 'Notice';
   DateTime? _eventDate;
@@ -179,30 +170,9 @@ class _CircularScreenState extends State<CircularScreen> {
 
   bool _isSending = false;
 
-  int get _families {
-    switch (_audience) {
-      case 0:
-        return AppState.instance.totalFamilies;
-      case 1:
-        return AppState.instance.totalFamilies;
-      default:
-        return _chosen.fold<int>(
-          0,
-              (sum, name) => sum + (_classFamilies[name] ?? 0),
-        );
-    }
-  }
+  int get _families => AppState.instance.totalFamilies;
 
-  String get _audienceLabel {
-    switch (_audience) {
-      case 0:
-        return 'Whole school';
-      case 1:
-        return _myClass;
-      default:
-        return _chosen.join(', ');
-    }
-  }
+  String get _audienceLabel => _myClass;
 
   String _dateTimeLabel(DateTime d) =>
       '${AppState.dateLabel(d)}, ${AppState.timeLabel(d)}';
@@ -229,107 +199,6 @@ class _CircularScreenState extends State<CircularScreen> {
   // ---------------------------------------------------------------
   // PICKERS
   // ---------------------------------------------------------------
-  Future<void> _pickClasses() async {
-    final temp = Set<String>.of(_chosen);
-
-    final result = await showModalBottomSheet<Set<String>>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) {
-        return StatefulBuilder(
-          builder: (ctx, setSheet) {
-            return Container(
-              padding: const EdgeInsets.fromLTRB(18, 12, 18, 22),
-              decoration: const BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.vertical(top: Radius.circular(25)),
-              ),
-              child: SafeArea(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Center(
-                      child: Container(
-                        height: 4,
-                        width: 42,
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFDDE5E1),
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 19),
-                    const Text(
-                      'Choose Classes',
-                      style: TextStyle(
-                        color: _dark,
-                        fontSize: 18,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                    const SizedBox(height: 5),
-                    const Text(
-                      'Select one or more classes to receive this circular.',
-                      style: TextStyle(color: _muted, fontSize: 11),
-                    ),
-                    const SizedBox(height: 14),
-                    for (final entry in _classFamilies.entries)
-                      CheckboxListTile(
-                        contentPadding: EdgeInsets.zero,
-                        value: temp.contains(entry.key),
-                        activeColor: _primary,
-                        title: Text(
-                          entry.key,
-                          style: const TextStyle(
-                            color: _dark,
-                            fontSize: 13,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                        subtitle: Text(
-                          '${entry.value} families',
-                          style: const TextStyle(color: _muted, fontSize: 10),
-                        ),
-                        onChanged: (value) {
-                          setSheet(() {
-                            if (value == true) {
-                              temp.add(entry.key);
-                            } else {
-                              temp.remove(entry.key);
-                            }
-                          });
-                        },
-                      ),
-                    const SizedBox(height: 10),
-                    AppButton(
-                      title: temp.isEmpty
-                          ? 'Choose at least one class'
-                          : 'Done · ${temp.length} selected',
-                      icon: Icons.check_rounded,
-                      onPressed:
-                      temp.isEmpty ? null : () => Navigator.pop(ctx, temp),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          },
-        );
-      },
-    );
-
-    if (!mounted || result == null) return;
-
-    setState(() {
-      _chosen
-        ..clear()
-        ..addAll(result);
-      _audience = 2;
-    });
-  }
-
   ThemeData _pickerTheme(BuildContext context) {
     return Theme.of(context).copyWith(
       colorScheme: const ColorScheme.light(
@@ -526,8 +395,6 @@ class _CircularScreenState extends State<CircularScreen> {
     _attachment = null;
     _attachmentBytes = null;
     _attachmentUrl = null;
-    _audience = 0;
-    _chosen.clear();
     _important = false;
     _needsAck = false;
     _scheduleLater = false;
@@ -547,8 +414,6 @@ class _CircularScreenState extends State<CircularScreen> {
           title: _title.text.trim(),
           message: _message.text.trim(),
           category: _category,
-          audience: _audience,
-          chosen: Set<String>.of(_chosen),
           eventDate: _eventDate,
           attachment: _attachment,
           attachmentBytes: _attachmentBytes,
@@ -571,10 +436,6 @@ class _CircularScreenState extends State<CircularScreen> {
       _title.text = d.title;
       _message.text = d.message;
       _category = d.category;
-      _audience = d.audience;
-      _chosen
-        ..clear()
-        ..addAll(d.chosen);
       _eventDate = d.eventDate;
       _attachment = d.attachment;
       _attachmentBytes = d.attachmentBytes;
@@ -734,10 +595,6 @@ class _CircularScreenState extends State<CircularScreen> {
 
     if (_message.text.trim().isEmpty) {
       return 'Please enter the circular message.';
-    }
-
-    if (_audience == 2 && _chosen.isEmpty) {
-      return 'Please choose at least one class.';
     }
 
     if (_category != 'Notice' && _eventDate == null) {
@@ -1082,45 +939,19 @@ class _CircularScreenState extends State<CircularScreen> {
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
         children: [
           // AUDIENCE
+          // बदल (Step 8): फक्त स्वतःचा class. Whole school / Choose classes काढले.
           _sectionTitle(
             'Send Circular To',
-            'Choose who should receive this message',
+            'Parents of your class will receive this message',
           ),
 
           const SizedBox(height: 11),
 
-          Column(
-            children: [
-              _audienceOption(
-                title: 'Whole School',
-                subtitle: 'All ${AppState.instance.totalFamilies} families',
-                icon: Icons.apartment_rounded,
-                selected: _audience == 0,
-                onTap: () => setState(() => _audience = 0),
-              ),
-              const SizedBox(height: 9),
-              _audienceOption(
-                title: _myClass,
-                subtitle: '${AppState.instance.totalFamilies} families',
-                icon: Icons.child_care_rounded,
-                selected: _audience == 1,
-                onTap: () => setState(() => _audience = 1),
-              ),
-              const SizedBox(height: 9),
-              _audienceOption(
-                title: 'Choose Classes',
-                subtitle: _chosen.isEmpty
-                    ? 'Select multiple classes'
-                    : _chosen.join(', '),
-                icon: Icons.groups_rounded,
-                selected: _audience == 2,
-                onTap: _pickClasses,
-                trailing: const Icon(
-                  Icons.chevron_right_rounded,
-                  color: _muted,
-                ),
-              ),
-            ],
+          _audienceOption(
+            title: _myClass,
+            subtitle: '${AppState.instance.totalFamilies} families',
+            icon: Icons.child_care_rounded,
+            selected: true,
           ),
 
           const SizedBox(height: 12),
@@ -1672,7 +1503,7 @@ class _CircularScreenState extends State<CircularScreen> {
     required String subtitle,
     required IconData icon,
     required bool selected,
-    required VoidCallback onTap,
+    VoidCallback? onTap,
     Widget? trailing,
   }) {
     return Material(

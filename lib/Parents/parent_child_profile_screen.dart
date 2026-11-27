@@ -1,3 +1,6 @@
+import 'dart:convert';
+
+import 'package:firebase_auth/firebase_auth.dart' show FirebaseAuth;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -8,16 +11,16 @@ import '../theme/app_colors.dart';
 import '../widgets/parent_widgets.dart';
 import 'parent_home_screen.dart' show ParentColors;
 
-/// P6 · Child Profile
+/// P6 · Child Profile  (अधिक आकर्षक आणि खरा दिसणारा layout)
 ///
-/// Features:
-///  - Back arrow (same as Photos / Diary / Circulars / Fees)
-///  - Hero card with avatar, name, class, roll no and age
-///  - Basic details grid (DOB, blood group, gender, class, teacher, roll no)
-///  - Allergies & health note (highlighted + copy)
-///  - Parents & emergency contacts (copy number)
-///  - Authorised pickup card
-///  - Copy full profile, request-a-change sheet
+/// रंग आणि background पूर्वीसारखेच आहेत. फक्त मांडणी सुधारली आहे:
+///  - Hero card: ring असलेला मोठा फोटो, नाव, class / roll / age / blood pills
+///    आणि "Call parent" + "Request change" बटणे
+///  - Child details कार्ड (दोन-दोन tiles), Birth date कार्ड (वाढदिवस जवळ आला की highlight)
+///  - Parent / Guardian कार्ड: नाव, email (copy), phone (call)
+///  - Allergy, Emergency contacts, Authorised pickup कार्ड्स
+///  - Change password, "Joined" तारीख
+///  - प्रत्येक section हळूहळू वर सरकत दिसतो (fade + slide)
 class ParentChildProfileScreen extends StatelessWidget {
   const ParentChildProfileScreen({super.key, this.onBack});
 
@@ -28,6 +31,33 @@ class ParentChildProfileScreen extends StatelessWidget {
   static const _redFg = Color(0xFFD9564F);
   static const _redBorder = Color(0xFFF5C9C5);
   static const _orangeFg = Color(0xFFD9822B);
+
+  static const _monthsFull = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December',
+  ];
+
+  // फोटो वारंवार decode होऊ नये म्हणून छोटा cache.
+  static String _cacheKey = '';
+  static MemoryImage? _cacheImg;
+
+  static MemoryImage? _photo(ChildInfo c) {
+    final data = c.facePhoto;
+    if (data.isEmpty) return null;
+    final key = '${data.length}:${data.hashCode}';
+    if (key == _cacheKey) return _cacheImg;
+    try {
+      final comma = data.indexOf(',');
+      final raw = comma < 0 ? data : data.substring(comma + 1);
+      _cacheImg = MemoryImage(base64Decode(raw));
+      _cacheKey = key;
+      return _cacheImg;
+    } catch (_) {
+      _cacheKey = key;
+      _cacheImg = null;
+      return null;
+    }
+  }
 
   // ---------- build ----------
   @override
@@ -42,34 +72,58 @@ class ParentChildProfileScreen extends StatelessWidget {
             final s = AppState.instance;
             final c = s.child;
             final now = DateTime.now();
+            final loading = c.id.isEmpty && c.name.isEmpty;
 
             return Column(
               children: [
                 _header(context, s),
                 Expanded(
-                  child: ListView(
-                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
+                  child: loading
+                      ? const Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        SizedBox(
+                          width: 26,
+                          height: 26,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2.4,
+                              color: ParentColors.primary),
+                        ),
+                        SizedBox(height: 12),
+                        Text('Loading profile…',
+                            style: TextStyle(
+                                fontSize: 12.5,
+                                color: ParentColors.muted)),
+                      ],
+                    ),
+                  )
+                      : ListView(
+                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 36),
                     children: [
-                      _hero(s, c, now),
+                      _appear(0, _hero(context, c, now)),
                       const SizedBox(height: 14),
-                      _basicDetails(s, c),
+                      _appear(1, _detailsCard(s, c)),
+                      const SizedBox(height: 14),
+                      _appear(2, _birthCard(c, now)),
+                      const SizedBox(height: 14),
+                      _appear(3, _parentCard(context, c)),
                       if (c.allergyNote.isNotEmpty) ...[
                         const SizedBox(height: 14),
-                        _allergyCard(context, c),
+                        _appear(4, _allergyCard(context, c)),
                       ],
                       const SizedBox(height: 14),
-                      _contactsCard(context, c),
+                      _appear(5, _contactsCard(context, c)),
                       if (c.pickupNote.isNotEmpty) ...[
                         const SizedBox(height: 14),
-                        _pickupCard(c),
+                        _appear(6, _pickupCard(c)),
                       ],
                       const SizedBox(height: 16),
-                      _changeButton(context),
-                      const SizedBox(height: 10),
-                      // नवीन: Parent साठी Change password
                       _passwordButton(context),
-                      const SizedBox(height: 12),
+                      const SizedBox(height: 14),
                       _note(),
+                      const SizedBox(height: 18),
+                      _joined(),
                     ],
                   ),
                 ),
@@ -81,7 +135,21 @@ class ParentChildProfileScreen extends StatelessWidget {
     );
   }
 
-  // ---------- header (back arrow + title + copy + edit) ----------
+  /// प्रत्येक section हळूहळू वर सरकत येतो.
+  Widget _appear(int index, Widget child) {
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0, end: 1),
+      duration: Duration(milliseconds: 380 + index * 80),
+      curve: Curves.easeOutCubic,
+      builder: (_, v, c) => Opacity(
+        opacity: v,
+        child: Transform.translate(offset: Offset(0, 18 * (1 - v)), child: c),
+      ),
+      child: child,
+    );
+  }
+
+  // ---------- header (back arrow + centered title + copy) ----------
   Widget _roundBtn(IconData icon, VoidCallback? onTap, {String? tooltip}) {
     final enabled = onTap != null;
     final btn = GestureDetector(
@@ -121,44 +189,23 @@ class ParentChildProfileScreen extends StatelessWidget {
             onBack ?? () => Navigator.maybePop(context),
             tooltip: 'Back',
           ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Child Profile',
-                  style: TextStyle(
-                    fontSize: 19,
-                    height: 1.1,
-                    fontWeight: FontWeight.w900,
-                    color: ParentColors.dark,
-                  ),
+          const Expanded(
+            child: Center(
+              child: Text(
+                'Child Profile',
+                style: TextStyle(
+                  fontSize: 17,
+                  height: 1.1,
+                  fontWeight: FontWeight.w900,
+                  color: ParentColors.dark,
                 ),
-                const SizedBox(height: 2),
-                Text(
-                  '${s.child.className} · ${s.child.name}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 10.5,
-                    fontWeight: FontWeight.w600,
-                    color: ParentColors.muted,
-                  ),
-                ),
-              ],
+              ),
             ),
           ),
           _roundBtn(
             Icons.copy_rounded,
                 () => _copyProfile(context, s),
             tooltip: 'Copy profile',
-          ),
-          const SizedBox(width: 8),
-          _roundBtn(
-            Icons.edit_outlined,
-                () => _requestChange(context),
-            tooltip: 'Request a change',
           ),
         ],
       ),
@@ -174,6 +221,9 @@ class ParentChildProfileScreen extends StatelessWidget {
       ..writeln('Date of birth: ${_dob(c)}')
       ..writeln('Blood group: ${c.bloodGroup}')
       ..writeln('Gender: ${c.gender}');
+    if (c.parentName.isNotEmpty) b.writeln('Parent: ${c.parentName}');
+    final mail = _parentEmail(c);
+    if (mail.isNotEmpty) b.writeln('Email: $mail');
     if (c.allergyNote.isNotEmpty) b.writeln('Allergies: ${c.allergyNote}');
     b.writeln();
     for (final p in c.contacts) {
@@ -187,89 +237,335 @@ class ParentChildProfileScreen extends StatelessWidget {
   String _dob(ChildInfo c) =>
       '${c.dob.day} ${AppState.monthShort(c.dob.month)} ${c.dob.year}';
 
-  // ---------- hero ----------
-  Widget _hero(AppState s, ChildInfo c, DateTime now) {
-    Widget pill(String text) => Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-      decoration: BoxDecoration(
-        color: const Color(0x33FFFFFF),
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Text(text,
-          style: const TextStyle(
+  /// Parent चा email: student मध्ये असेल तर तो, नाहीतर login चा email.
+  String _parentEmail(ChildInfo c) {
+    if (c.parentEmail.trim().isNotEmpty) return c.parentEmail.trim();
+    return FirebaseAuth.instance.currentUser?.email ?? '';
+  }
+
+  /// पहिला उपलब्ध contact नंबर (नसेल तर '').
+  String _firstPhone(ChildInfo c) {
+    for (final p in c.contacts) {
+      if (p.phone.trim().isNotEmpty) return p.phone.trim();
+    }
+    return '';
+  }
+
+  // ---------- hero card ----------
+  Widget _hero(BuildContext context, ChildInfo c, DateTime now) {
+    final photo = _photo(c);
+    final phone = _firstPhone(c);
+
+    final avatar = Stack(
+      clipBehavior: Clip.none,
+      children: [
+        // ring (gradient border)
+        Container(
+          padding: const EdgeInsets.all(4),
+          decoration: const BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [ParentColors.primary, ParentColors.primaryLight],
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Color(0x332B8FDB),
+                blurRadius: 18,
+                offset: Offset(0, 8),
+              ),
+            ],
+          ),
+          child: Container(
+            padding: const EdgeInsets.all(3),
+            decoration: const BoxDecoration(
               color: Colors.white,
-              fontSize: 11,
-              fontWeight: FontWeight.w800)),
+              shape: BoxShape.circle,
+            ),
+            child: CircleAvatar(
+              radius: 50,
+              backgroundColor: ParentColors.tintStrong,
+              backgroundImage: photo,
+              child: photo == null
+                  ? Text(
+                initialsOf(c.name),
+                style: const TextStyle(
+                  fontSize: 30,
+                  fontWeight: FontWeight.w900,
+                  color: ParentColors.primary,
+                ),
+              )
+                  : null,
+            ),
+          ),
+        ),
+        // student badge
+        Positioned(
+          right: 2,
+          bottom: 4,
+          child: Container(
+            width: 30,
+            height: 30,
+            decoration: BoxDecoration(
+              color: ParentColors.primary,
+              shape: BoxShape.circle,
+              border: Border.all(color: Colors.white, width: 2.5),
+            ),
+            child: const Icon(Icons.school_rounded,
+                size: 15, color: Colors.white),
+          ),
+        ),
+      ],
     );
 
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [ParentColors.primary, ParentColors.primaryLight],
-        ),
-        borderRadius: BorderRadius.circular(22),
-        boxShadow: const [
-          BoxShadow(
-            color: Color(0x332B8FDB),
-            blurRadius: 16,
-            offset: Offset(0, 7),
+      padding: const EdgeInsets.fromLTRB(16, 22, 16, 16),
+      decoration: _cardDeco(),
+      child: Column(
+        children: [
+          photo == null
+              ? avatar
+              : GestureDetector(
+            onTap: () => _showPhoto(context, photo),
+            child: avatar,
+          ),
+          const SizedBox(height: 14),
+          Text(
+            c.name,
+            textAlign: TextAlign.center,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              fontSize: 21,
+              height: 1.15,
+              fontWeight: FontWeight.w900,
+              color: ParentColors.dark,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            alignment: WrapAlignment.center,
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              if (c.className.isNotEmpty)
+                _pill(Icons.school_outlined, c.className),
+              if (c.rollNo > 0) _pill(Icons.tag_rounded, 'Roll ${c.rollNo}'),
+              _pill(Icons.cake_outlined, c.ageLabel(now)),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              if (phone.isNotEmpty) ...[
+                Expanded(
+                  child: _actionBtn(
+                    Icons.call_rounded,
+                    'Call parent',
+                        () => _call(context, phone),
+                    filled: true,
+                  ),
+                ),
+                const SizedBox(width: 10),
+              ],
+              Expanded(
+                child: _actionBtn(
+                  Icons.edit_note_rounded,
+                  'Request change',
+                      () => _requestChange(context),
+                ),
+              ),
+            ],
           ),
         ],
       ),
+    );
+  }
+
+  Widget _pill(IconData icon, String text, {bool red = false}) {
+    final fg = red ? _redFg : ParentColors.primary;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
+      decoration: BoxDecoration(
+        color: red ? AppColors.redLight : ParentColors.tint,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: red ? _redBorder : ParentColors.border),
+      ),
       child: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Container(
-            width: 64,
-            height: 64,
-            decoration: BoxDecoration(
-              color: Colors.white,
-              shape: BoxShape.circle,
-              border: Border.all(color: const Color(0x66FFFFFF), width: 3),
-            ),
-            alignment: Alignment.center,
-            child: Text(
-              initialsOf(c.name),
-              style: const TextStyle(
-                fontSize: 21,
-                fontWeight: FontWeight.w900,
-                color: ParentColors.primary,
-              ),
+          Icon(icon, size: 14, color: fg),
+          const SizedBox(width: 5),
+          Text(
+            text,
+            style: TextStyle(
+              fontSize: 11.5,
+              fontWeight: FontWeight.w800,
+              color: red ? _redFg : ParentColors.dark,
             ),
           ),
-          const SizedBox(width: 14),
+        ],
+      ),
+    );
+  }
+
+  Widget _actionBtn(IconData icon, String label, VoidCallback onTap,
+      {bool filled = false}) {
+    return SizedBox(
+      height: 44,
+      child: filled
+          ? ElevatedButton.icon(
+        onPressed: onTap,
+        icon: Icon(icon, size: 18),
+        label: Text(label),
+        style: ElevatedButton.styleFrom(
+          backgroundColor: ParentColors.primary,
+          foregroundColor: Colors.white,
+          elevation: 0,
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          shape:
+          RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          textStyle:
+          const TextStyle(fontWeight: FontWeight.w800, fontSize: 13),
+        ),
+      )
+          : OutlinedButton.icon(
+        onPressed: onTap,
+        icon: Icon(icon, size: 19),
+        label: Text(label),
+        style: OutlinedButton.styleFrom(
+          foregroundColor: ParentColors.primary,
+          backgroundColor: Colors.white,
+          side: const BorderSide(color: ParentColors.border),
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          shape:
+          RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          textStyle:
+          const TextStyle(fontWeight: FontWeight.w800, fontSize: 13),
+        ),
+      ),
+    );
+  }
+
+  void _showPhoto(BuildContext context, ImageProvider photo) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: const EdgeInsets.all(18),
+        child: Stack(
+          alignment: Alignment.topRight,
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(18),
+              child: InteractiveViewer(
+                child: Image(image: photo, fit: BoxFit.contain),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(8),
+              child: _roundBtn(Icons.close_rounded, () => Navigator.pop(ctx),
+                  tooltip: 'Close'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ---------- child details card ----------
+  Widget _detailsCard(AppState s, ChildInfo c) {
+    final t = s.teacherName.trim();
+    // 'Teacher' हे default नाव आहे; खरं नाव अजून आलं नसेल तर "Not assigned yet".
+    final teacher = (t.isEmpty || t == 'Teacher') ? 'Not assigned yet' : t;
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: _cardDeco(),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _cardTitle(Icons.badge_rounded, 'Child details'),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(child: _tile(Icons.school_rounded, 'Class', c.className)),
+              const SizedBox(width: 10),
+              Expanded(
+                child: _tile(Icons.tag_rounded, 'Roll number',
+                    c.rollNo > 0 ? '${c.rollNo}' : ''),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(child: _tile(Icons.wc_rounded, 'Gender', c.gender)),
+              const SizedBox(width: 10),
+              Expanded(
+                child: _tile(Icons.bloodtype_rounded, 'Blood group',
+                    c.bloodGroup),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          _tile(Icons.person_pin_rounded, 'Class teacher', teacher),
+        ],
+      ),
+    );
+  }
+
+  Widget _iconTile(IconData icon, {double size = 34}) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        color: ParentColors.tintStrong,
+        borderRadius: BorderRadius.circular(11),
+      ),
+      child: Icon(icon, size: size * 0.5, color: ParentColors.primary),
+    );
+  }
+
+  Widget _tile(IconData icon, String label, String value) {
+    final has = value.trim().isNotEmpty;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+      decoration: BoxDecoration(
+        color: AppColors.background,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        children: [
+          _iconTile(icon),
+          const SizedBox(width: 10),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  c.name,
+                  label,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 19,
-                    fontWeight: FontWeight.w900,
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.w600,
+                    color: ParentColors.muted,
                   ),
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  '${c.className} · Roll No. ${c.rollNo}',
-                  style: const TextStyle(
-                      color: Color(0xFFEAF5FD), fontSize: 12.5),
-                ),
-                const SizedBox(height: 10),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 6,
-                  children: [
-                    pill('Age ${c.ageLabel(now)}'),
-                    pill(c.gender),
-                    pill(c.bloodGroup),
-                  ],
+                  has ? value.trim() : '—',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 13.5,
+                    fontWeight: FontWeight.w800,
+                    color: has ? ParentColors.dark : ParentColors.muted,
+                  ),
                 ),
               ],
             ),
@@ -279,37 +575,101 @@ class ParentChildProfileScreen extends StatelessWidget {
     );
   }
 
-  // ---------- basic details ----------
-  Widget _basicDetails(AppState s, ChildInfo c) {
+  // ---------- birth date card ----------
+  Widget _birthCard(ChildInfo c, DateTime now) {
+    Widget chip(String text, int flex) => Expanded(
+      flex: flex,
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 11),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: AppColors.background,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Text(
+          text,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w800,
+            color: ParentColors.dark,
+          ),
+        ),
+      ),
+    );
+
+    // पुढचा वाढदिवस किती दिवसांनी.
+    final today = DateTime(now.year, now.month, now.day);
+    var next = DateTime(now.year, c.dob.month, c.dob.day);
+    if (next.isBefore(today)) {
+      next = DateTime(now.year + 1, c.dob.month, c.dob.day);
+    }
+    final days = next.difference(today).inDays;
+    final soon = days <= 7;
+    final bday = days == 0
+        ? 'Birthday today'
+        : (days == 1 ? 'Birthday tomorrow' : 'Birthday in $days days');
+
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: _cardDeco(),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _cardTitle(Icons.badge_rounded, 'Basic details'),
+          _cardTitle(Icons.cake_rounded, 'Birth date'),
           const SizedBox(height: 12),
           Row(
             children: [
-              _box(Icons.cake_rounded, 'Date of birth', _dob(c)),
-              const SizedBox(width: 10),
-              _box(Icons.bloodtype_rounded, 'Blood group', c.bloodGroup),
+              chip('${c.dob.day}', 2),
+              const SizedBox(width: 8),
+              chip(_monthsFull[c.dob.month - 1], 4),
+              const SizedBox(width: 8),
+              chip('${c.dob.year}', 3),
             ],
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 12),
           Row(
             children: [
-              _box(Icons.school_rounded, 'Class', c.className),
-              const SizedBox(width: 10),
-              _box(Icons.person_pin_rounded, 'Class teacher', s.teacherName),
-            ],
-          ),
-          const SizedBox(height: 10),
-          Row(
-            children: [
-              _box(Icons.tag_rounded, 'Roll number', '${c.rollNo}'),
-              const SizedBox(width: 10),
-              _box(Icons.wc_rounded, 'Gender', c.gender),
+              Expanded(
+                child: Text(
+                  'Age ${c.ageLabel(now)}',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: ParentColors.muted,
+                  ),
+                ),
+              ),
+              Container(
+                padding:
+                const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                  color: soon
+                      ? const Color(0x33F2B233)
+                      : ParentColors.tint,
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.celebration_rounded,
+                      size: 14,
+                      color: soon ? _orangeFg : ParentColors.primary,
+                    ),
+                    const SizedBox(width: 5),
+                    Text(
+                      bday,
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w800,
+                        color: soon ? _orangeFg : ParentColors.primary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ],
           ),
         ],
@@ -317,49 +677,145 @@ class ParentChildProfileScreen extends StatelessWidget {
     );
   }
 
-  Widget _box(IconData icon, String label, String value) {
-    return Expanded(
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-        decoration: BoxDecoration(
-          color: AppColors.background,
-          borderRadius: BorderRadius.circular(14),
-        ),
+  // ---------- parent / guardian card ----------
+  Widget _parentCard(BuildContext context, ChildInfo c) {
+    final phone = _firstPhone(c);
+    final mail = _parentEmail(c);
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 14, 14, 6),
+      decoration: _cardDeco(),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _cardTitle(Icons.family_restroom_rounded, 'Parent / Guardian'),
+          const SizedBox(height: 6),
+          _infoRow(context, Icons.person_outline_rounded, 'Name',
+              c.parentName),
+          const Divider(height: 1, color: AppColors.border),
+          _infoRow(
+            context,
+            Icons.mail_outline_rounded,
+            'Email address',
+            mail,
+            actionIcon: Icons.copy_rounded,
+            onAction: mail.isEmpty
+                ? null
+                : () async {
+              await Clipboard.setData(ClipboardData(text: mail));
+              if (context.mounted) showSnack(context, 'Email copied');
+            },
+          ),
+          const Divider(height: 1, color: AppColors.border),
+          _infoRow(
+            context,
+            Icons.phone_outlined,
+            'Phone number',
+            phone.isEmpty ? '' : '+91 $phone',
+            actionIcon: Icons.call_rounded,
+            onAction: phone.isEmpty ? null : () => _call(context, phone),
+            copyValue: phone,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _infoRow(
+      BuildContext context,
+      IconData icon,
+      String label,
+      String value, {
+        IconData? actionIcon,
+        VoidCallback? onAction,
+        String? copyValue,
+      }) {
+    final has = value.trim().isNotEmpty;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onLongPress: !has
+          ? null
+          : () async {
+        await Clipboard.setData(
+            ClipboardData(text: (copyValue ?? value).trim()));
+        if (context.mounted) showSnack(context, '$label copied');
+      },
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 11),
         child: Row(
           children: [
-            Container(
-              width: 30,
-              height: 30,
-              decoration: BoxDecoration(
-                color: ParentColors.tintStrong,
-                borderRadius: BorderRadius.circular(9),
-              ),
-              child: Icon(icon, size: 16, color: ParentColors.primary),
-            ),
-            const SizedBox(width: 8),
+            _iconTile(icon),
+            const SizedBox(width: 12),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(label,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                          fontSize: 10,
-                          color: ParentColors.muted,
-                          fontWeight: FontWeight.w600)),
+                  Text(
+                    label,
+                    style: const TextStyle(
+                      fontSize: 10.5,
+                      fontWeight: FontWeight.w600,
+                      color: ParentColors.muted,
+                    ),
+                  ),
                   const SizedBox(height: 2),
-                  Text(value,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                          fontSize: 12.5,
-                          fontWeight: FontWeight.w800,
-                          color: ParentColors.dark)),
+                  Text(
+                    has ? value.trim() : '—',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 13.5,
+                      fontWeight: FontWeight.w800,
+                      color: has ? ParentColors.dark : ParentColors.muted,
+                    ),
+                  ),
                 ],
               ),
             ),
+            if (actionIcon != null && onAction != null)
+              GestureDetector(
+                onTap: onAction,
+                child: Container(
+                  width: 36,
+                  height: 36,
+                  decoration: const BoxDecoration(
+                    color: ParentColors.tintStrong,
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(actionIcon,
+                      size: 17, color: ParentColors.primary),
+                ),
+              ),
           ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _call(BuildContext context, String phone) async {
+    final digits = phone.replaceAll(RegExp(r'[^0-9+]'), '');
+    final ok =
+        digits.isNotEmpty && await launchUrl(Uri(scheme: 'tel', path: digits));
+    if (!ok && context.mounted) {
+      await Clipboard.setData(ClipboardData(text: phone));
+      if (context.mounted) {
+        showSnack(context, 'Could not open the dialer. Number copied: $phone');
+      }
+    }
+  }
+
+  // ---------- Joined (सगळ्यात खाली) ----------
+  Widget _joined() {
+    final d = FirebaseAuth.instance.currentUser?.metadata.creationTime;
+    if (d == null) return const SizedBox.shrink();
+    final l = d.toLocal();
+    return Center(
+      child: Text(
+        'Joined ${l.day} ${AppState.monthShort(l.month)} ${l.year}',
+        style: const TextStyle(
+          fontSize: 11.5,
+          fontWeight: FontWeight.w600,
+          color: ParentColors.muted,
         ),
       ),
     );
@@ -616,27 +1072,6 @@ class ParentChildProfileScreen extends StatelessWidget {
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(14),
           ),
-        ),
-      ),
-    );
-  }
-
-  Widget _changeButton(BuildContext context) {
-    return SizedBox(
-      width: double.infinity,
-      height: 48,
-      child: OutlinedButton.icon(
-        onPressed: () => _requestChange(context),
-        icon: const Icon(Icons.edit_note_rounded, size: 20),
-        label: const Text('Request a profile change'),
-        style: OutlinedButton.styleFrom(
-          foregroundColor: ParentColors.primary,
-          backgroundColor: Colors.white,
-          side: const BorderSide(color: ParentColors.border),
-          shape:
-          RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-          textStyle:
-          const TextStyle(fontWeight: FontWeight.w800, fontSize: 13.5),
         ),
       ),
     );

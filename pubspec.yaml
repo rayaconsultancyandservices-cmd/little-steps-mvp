@@ -27,6 +27,11 @@ dependencies:
   # नंतर `flutter pub add gal` चालवून exact version पिन करा.
   gal: any
 
+  # ---- Admin web: CSV download ----
+  # नवीन: lib/Admin/csv_download_web.dart मध्ये `package:web/web.dart` वापरलंय,
+  # म्हणून ते स्पष्टपणे इथे जाहीर केलं (आधी फक्त दुसऱ्या package मुळे आपोआप यायचं).
+  web: ^1.1.0
+
   # ---- AI Face Scan Attendance (नवीन) ----
   # `any` -> pub get तुमच्या SDK/Firebase शी जुळणारी version निवडतो.
   google_mlkit_face_detection: any   # फोटोतले चेहरे शोधतो (offline)

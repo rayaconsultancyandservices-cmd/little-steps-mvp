@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:math' show Random;
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
 
 import '../services/auth_service.dart';
@@ -31,6 +33,7 @@ class AdminTeacher {
     required this.classId,
     this.approved = true,
     this.createdAt,
+    this.inviteStatus = '',
   });
 
   final String uid;
@@ -39,6 +42,10 @@ class AdminTeacher {
   final String phone;
   final String schoolName;
   final String employeeId;
+
+  /// नवीन: '' = जुना teacher, 'sent' = Admin ने invite पाठवला (अजून login नाही),
+  /// 'active' = Teacher ने invite वापरून पहिल्यांदा login केलं.
+  final String inviteStatus;
   final String className;
   final String classId;
 
@@ -60,6 +67,7 @@ class AdminTeacher {
       classId: _s(x['classId']),
       approved: x['approved'] != false,
       createdAt: _date(x['createdAt']),
+      inviteStatus: _s(x['inviteStatus']),
     );
   }
 }
@@ -826,6 +834,16 @@ class AdminState extends ChangeNotifier {
     return null;
   }
 
+  /// नवीन: या class चा दुसरा (exceptUid सोडून) teacher, नसेल तर null.
+  /// एका class ला एकच class teacher — Assign / Approve करण्यापूर्वी हे तपासतो.
+  AdminTeacher? otherTeacherOfClass(String classId, String exceptUid) {
+    if (classId.isEmpty) return null;
+    for (final t in teachers) {
+      if (t.classId == classId && t.uid != exceptUid) return t;
+    }
+    return null;
+  }
+
   bool parentJoined(ChildInfo s) {
     final mail = s.parentEmail.trim().toLowerCase();
     return parentUsers.any((p) =>
@@ -927,8 +945,124 @@ class AdminState extends ChangeNotifier {
   // =================================================================
   // TEACHER ACTIONS
   // =================================================================
+
+  /// कोणालाही माहीत नसलेला तात्पुरता password (Teacher invite email मधून स्वतःचा ठरवतो).
+  static String _tempPassword() {
+    const chars =
+        'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#\$%';
+    final r = Random.secure();
+    return List.generate(24, (_) => chars[r.nextInt(chars.length)]).join();
+  }
+
+  /// नवीन: Admin नवीन Teacher जोडतो आणि invite पाठवतो.
+  ///
+  /// 1) दुसऱ्या (secondary) Firebase app मधून Teacher चं Auth account बनवतो.
+  ///    (मुख्य app मधून बनवलं तर Admin चं login जाऊन Teacher चं login होईल, म्हणून
+  ///    वेगळी app वापरतो.)
+  /// 2) `users/{uid}` (approved + class) आणि `classes/{id}` Admin च्या login ने लिहितो.
+  /// 3) Teacher च्या email वर password सेट करण्याची link (invite) पाठवतो.
+  ///
+  /// परत येणारी bool: invite email यशस्वी गेला का. Account बनला पण email गेला नाही
+  /// तर false (Admin ने "Resend invite" वापरावं).
+  Future<bool> addTeacher({
+    required String name,
+    required String email,
+    required String phone,
+    required String employeeId,
+    required AdminClass cls,
+  }) async {
+    final mail = email.trim().toLowerCase();
+    final other = otherTeacherOfClass(cls.id, '');
+    if (other != null) {
+      throw Exception('${cls.className} already has a class teacher '
+          '(${other.name}). Unassign them first.');
+    }
+
+    FirebaseApp app;
+    try {
+      app = Firebase.app('teacher_invite');
+    } catch (_) {
+      app = await Firebase.initializeApp(
+        name: 'teacher_invite',
+        options: Firebase.app().options,
+      );
+    }
+    final auth2 = FirebaseAuth.instanceFor(app: app);
+
+    UserCredential cred;
+    try {
+      cred = await auth2.createUserWithEmailAndPassword(
+        email: mail,
+        password: _tempPassword(),
+      );
+    } on FirebaseAuthException catch (e) {
+      if (e.code == 'email-already-in-use') {
+        throw Exception('This email already has an account. '
+            'Use a different email for the teacher.');
+      }
+      rethrow;
+    }
+
+    final newUid = cred.user!.uid;
+    try {
+      final school = cls.schoolName.isNotEmpty ? cls.schoolName : schoolName;
+      final batch = _db.batch();
+      batch.set(_db.collection('users').doc(newUid), {
+        'role': 'teacher',
+        'name': name.trim(),
+        'email': mail,
+        'phone': phone.trim(),
+        'employeeId': employeeId.trim(),
+        'schoolName': school,
+        'className': cls.className,
+        'classId': cls.id,
+        'approved': true,
+        'inviteStatus': 'sent',
+        'invitedAt': Timestamp.now(),
+        'invitedBy': uid,
+        'createdAt': Timestamp.now(),
+      });
+      batch.set(
+        _db.collection('classes').doc(cls.id),
+        {
+          'teacherName': name.trim(),
+          'teacherUid': newUid,
+          'className': cls.className,
+          'schoolName': school,
+        },
+        SetOptions(merge: true),
+      );
+      await batch.commit();
+    } catch (e) {
+      // profile लिहिता आला नाही -> अर्धवट बनलेलं Auth account काढतो.
+      try {
+        await cred.user!.delete();
+      } catch (_) {}
+      try {
+        await auth2.signOut();
+      } catch (_) {}
+      rethrow;
+    }
+    try {
+      await auth2.signOut();
+    } catch (_) {}
+
+    try {
+      await FirebaseAuth.instance.sendPasswordResetEmail(email: mail);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// Teacher ला class assign करतो (users + classes दोन्ही update).
   Future<void> assignTeacher(AdminTeacher t, AdminClass c) async {
+    // नवीन: एका class ला एकच teacher.
+    final other = otherTeacherOfClass(c.id, t.uid);
+    if (other != null) {
+      throw Exception('${c.className} already has a class teacher '
+          '(${other.name}). Unassign them first.');
+    }
     final batch = _db.batch();
     // आधीच्या class वर याच teacher चं नाव राहू नये.
     if (t.classId.isNotEmpty && t.classId != c.id) {
@@ -959,8 +1093,50 @@ class AdminState extends ChangeNotifier {
     await batch.commit();
   }
 
+  /// नवीन: एकाच वेळी Approve + Class देणे (नवीन teacher साठी योग्य मार्ग).
+  /// users आणि classes दोन्ही एका batch मध्ये, म्हणून अर्धवट स्थिती राहत नाही.
+  Future<void> approveAndAssign(AdminTeacher t, AdminClass c) async {
+    final other = otherTeacherOfClass(c.id, t.uid);
+    if (other != null) {
+      throw Exception('${c.className} already has a class teacher '
+          '(${other.name}). Unassign them first.');
+    }
+    final batch = _db.batch();
+    if (t.classId.isNotEmpty && t.classId != c.id) {
+      final old = classes.where((x) => x.id == t.classId).toList();
+      if (old.isNotEmpty && old.first.teacherUid == t.uid) {
+        batch.set(
+          _db.collection('classes').doc(old.first.id),
+          {'teacherName': '', 'teacherUid': ''},
+          SetOptions(merge: true),
+        );
+      }
+    }
+    batch.update(_db.collection('users').doc(t.uid), {
+      'approved': true,
+      'className': c.className,
+      'classId': c.id,
+      'schoolName': c.schoolName,
+    });
+    batch.set(
+      _db.collection('classes').doc(c.id),
+      {
+        'teacherName': t.name,
+        'teacherUid': t.uid,
+        'className': c.className,
+        'schoolName': c.schoolName,
+      },
+      SetOptions(merge: true),
+    );
+    await batch.commit();
+  }
+
   /// Teacher approve / revoke. Approve होईपर्यंत Teacher app मध्ये data दिसत नाही.
+  /// नवीन: Class नसलेल्या teacher ला थेट approve करता येत नाही -> approveAndAssign.
   Future<void> setTeacherApproved(AdminTeacher t, bool approved) async {
+    if (approved && t.classId.isEmpty) {
+      throw Exception('Assign a class first (use "Approve & assign class").');
+    }
     final batch = _db.batch();
     batch.update(_db.collection('users').doc(t.uid), {'approved': approved});
     // Approve करताना त्याच्या class चा document तयार (नसल्यास) – Parent app ला teacher नाव दिसतं.

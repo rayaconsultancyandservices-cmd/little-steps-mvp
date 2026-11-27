@@ -143,7 +143,7 @@ class _MyStudentsScreenState extends State<MyStudentsScreen> {
 
           if (all.isEmpty)
             _empty('No students in your class yet.\n'
-                'Add them from Attendance → the “add student” icon.')
+                'Please ask the school admin to add students.')
           else if (list.isEmpty)
             _empty('No student matches your search.')
           else

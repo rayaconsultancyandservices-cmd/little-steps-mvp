@@ -56,49 +56,26 @@ class AuthService {
   // ------------------------------------------------------------------
   // TEACHER
   // ------------------------------------------------------------------
-  static Future<String?> registerTeacher({
-    required String name,
-    required String email,
-    required String phone,
-    required String school,
-    required String employeeId,
-    required String className,
-    required String password,
-  }) async {
-    User? user;
+  // बदल: Teacher आता स्वतः register करू शकत नाही (registerTeacher काढलं).
+  // Teacher चं account फक्त school Admin बनवतो (Admin -> Teachers -> Add teacher)
+  // आणि Teacher ला email वर invite (password सेट करण्याची link) जाते.
+  // Teacher त्या link ने password ठरवतो आणि मग email + password ने login करतो.
+
+  /// Invite मधून पहिल्यांदा login झाला की Admin ला "Invite sent" ऐवजी "Active" दिसावं.
+  static Future<void> _markTeacherActive() async {
+    final user = _auth.currentUser;
+    if (user == null) return;
     try {
-      final cred = await _auth.createUserWithEmailAndPassword(
-        email: _email(email),
-        password: password,
-      );
-      user = cred.user!;
-      final classId = classIdFor(school, className);
-
-      await _db.collection('users').doc(user.uid).set({
-        'role': 'teacher',
-        'name': name.trim(),
-        'email': _email(email),
-        'phone': phone.trim(),
-        'schoolName': school.trim(),
-        'employeeId': employeeId.trim(),
-        'className': className,
-        'classId': classId,
-        // Admin approve करेपर्यंत Teacher ला data दिसत नाही (Firestore rules).
-        'approved': false,
-        'createdAt': Timestamp.now(),
-      });
-      // `classes/{classId}` इथे बनवत नाही: approve होईपर्यंत rules लिहू देत नाहीत.
-      // Admin approve करताना (किंवा approve नंतरच्या पहिल्या login ला) तो आपोआप बनतो.
-
-      // Register झाल्यावर login screen वर परत जातो, म्हणून sign out.
-      await _auth.signOut();
-      return null;
-    } catch (e) {
-      // अर्धवट बनलेलं account काढून टाकतो म्हणजे परत register करता येईल.
-      try {
-        await user?.delete();
-      } catch (_) {}
-      return _message(e);
+      final ref = _db.collection('users').doc(user.uid);
+      final snap = await ref.get();
+      if (snap.data()?['inviteStatus'] == 'sent') {
+        await ref.update({
+          'inviteStatus': 'active',
+          'firstLoginAt': Timestamp.now(),
+        });
+      }
+    } catch (_) {
+      // महत्त्वाचं नाही; login थांबवत नाही.
     }
   }
 
@@ -117,6 +94,7 @@ class AuthService {
         await signOut();
         return 'This is not a Teacher account. Please use the Parent app.';
       }
+      await _markTeacherActive();
       return null;
     } catch (e) {
       return _message(e);

@@ -9,8 +9,6 @@ import 'diary_screen.dart';
 import 'circular_screen.dart';
 import 'messages_screen.dart';
 import 'teacher_profile_screen.dart';
-import 'fees_screen.dart';
-import 'events_screen.dart';
 import 'leave_screen.dart';
 import 'my_students_screen.dart';
 
@@ -30,8 +28,8 @@ class _MainShellState extends State<MainShell> {
   // 4 Circulars
   // 5 Messages   (Home वरून उघडतो)
   // 6 My Profile  (Home वरून उघडतो)
-  // 7 Fees       (Home वरून उघडतो) - नवीन
-  // 8 Events     (Home वरून उघडतो) - नवीन
+  // 7 (रिकामा)   - आधी Fees होता. बदल (Step 6): Fees फक्त Admin बघतो, Teacher app मधून काढला.
+  // 8 (रिकामा)   - आधी Events होता. बदल (Step 6): Events फक्त Admin टाकतो, Teacher app मधून काढला.
   // 9 Leave      (Home वरून उघडतो) - नवीन
   // 10 My Students (Home वरून उघडतो) - नवीन; मुलावर टॅप = Student Profile
 
@@ -59,13 +57,10 @@ class _MainShellState extends State<MainShell> {
       CircularScreen(onBack: _goHome),
       MessagesScreen(onBack: _goHome),
       TeacherProfileScreen(onBack: _goHome),
-      // नवीन: Fees आणि Events — फक्त उघडल्यावर तयार होतात (लगेच fresh data).
-      _selectedIndex == 7
-          ? TeacherFeesScreen(onBack: _goHome)
-          : const SizedBox.shrink(),
-      _selectedIndex == 8
-          ? TeacherEventsScreen(onBack: _goHome)
-          : const SizedBox.shrink(),
+      // 7 आणि 8: जागा रिकामी ठेवली आहे, म्हणजे बाकी screens चे index (9 Leave,
+      // 10 My Students) तसेच राहतात आणि Home / Notifications चे दुवे बदलावे लागत नाहीत.
+      const SizedBox.shrink(),
+      const SizedBox.shrink(),
       _selectedIndex == 9
           ? TeacherLeaveScreen(onBack: _goHome)
           : const SizedBox.shrink(),
@@ -93,7 +88,7 @@ class _MainShellState extends State<MainShell> {
   Widget _buildBottomNavigation() {
     // Bottom bar चे 5 tabs आणि ते उघडणारे page index:
     //   Home=0, Attendance=1, Photos=2, Diary=3, Profile=6
-    // Circulars / Messages / Fees / Events / Leave / My Students Home वरून उघडतात,
+    // Circulars / Messages / Leave / My Students Home वरून उघडतात,
     // म्हणून त्यावेळी Home highlighted राहतो.
     const tabPages = [0, 1, 2, 3, 6];
     final activeIndex =

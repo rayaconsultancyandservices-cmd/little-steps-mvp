@@ -5,7 +5,7 @@ import 'package:flutter/services.dart';
 import 'admin_state.dart';
 import 'admin_widgets.dart';
 
-/// Teachers: teacher app मध्ये register झालेले सर्व teachers (खरा data).
+/// Teachers: Admin ने जोडलेले सर्व teachers (Add teacher -> invite email). खरा data.
 class AdminTeachersScreen extends StatefulWidget {
   const AdminTeachersScreen({super.key});
 
@@ -24,6 +24,152 @@ class _AdminTeachersScreenState extends State<AdminTeachersScreen> {
     super.dispose();
   }
 
+  /// नवीन: Admin नवीन Teacher जोडतो आणि invite email पाठवतो.
+  Future<void> _addTeacher() async {
+    final s = AdminState.instance;
+    if (s.classes.isEmpty) {
+      adminSnack(context, 'Create a class first (Classes tab).', error: true);
+      return;
+    }
+    final formKey = GlobalKey<FormState>();
+    final name = TextEditingController();
+    final email = TextEditingController();
+    final phone = TextEditingController();
+    final emp = TextEditingController();
+    String? selected;
+
+    final result = await showDialog<Map<String, Object>>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setD) => AlertDialog(
+          backgroundColor: Colors.white,
+          surfaceTintColor: Colors.transparent,
+          title: const Text('Add teacher'),
+          content: SizedBox(
+            width: 400,
+            child: SingleChildScrollView(
+              child: Form(
+                key: formKey,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    dialogField(name, 'Full name', required: true),
+                    dialogField(
+                      email,
+                      'Email (login)',
+                      required: true,
+                      keyboard: TextInputType.emailAddress,
+                      validator: (v) {
+                        final x = (v ?? '').trim();
+                        if (x.isEmpty) return 'Required';
+                        if (!x.contains('@') || !x.contains('.')) {
+                          return 'Enter a valid email';
+                        }
+                        return null;
+                      },
+                    ),
+                    dialogField(phone, 'Phone', keyboard: TextInputType.phone),
+                    dialogField(emp, 'Employee ID'),
+                    AdminDropdown<String>(
+                      label: 'Class',
+                      width: 400,
+                      value: selected,
+                      items: [
+                        for (final c in s.classes)
+                          DropdownMenuItem(
+                            value: c.id,
+                            child: Text(
+                              s.otherTeacherOfClass(c.id, '') == null
+                                  ? c.className
+                                  : '${c.className}  (taken: '
+                                  '${s.otherTeacherOfClass(c.id, '')!.name})',
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                      ],
+                      onChanged: (v) => setD(() => selected = v),
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      selected != null &&
+                          s.otherTeacherOfClass(selected!, '') != null
+                          ? 'This class already has a class teacher. Choose '
+                          'another class.'
+                          : 'An email with a link to set the password will be '
+                          'sent to the teacher. After setting it, the teacher '
+                          'logs in with email and password.',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: selected != null &&
+                            s.otherTeacherOfClass(selected!, '') != null
+                            ? AdminColors.red
+                            : AdminColors.muted,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              style: adminPrimaryButton(),
+              onPressed: (selected == null ||
+                  s.otherTeacherOfClass(selected!, '') != null)
+                  ? null
+                  : () {
+                if (!formKey.currentState!.validate()) return;
+                Navigator.pop(ctx, {
+                  'name': name.text,
+                  'email': email.text,
+                  'phone': phone.text,
+                  'emp': emp.text,
+                  'classId': selected!,
+                });
+              },
+              child: const Text('Add & send invite'),
+            ),
+          ],
+        ),
+      ),
+    );
+    name.dispose();
+    email.dispose();
+    phone.dispose();
+    emp.dispose();
+    if (result == null) return;
+
+    try {
+      final cls = s.classes.firstWhere((c) => c.id == result['classId']);
+      final sent = await s.addTeacher(
+        name: result['name'] as String,
+        email: result['email'] as String,
+        phone: result['phone'] as String,
+        employeeId: result['emp'] as String,
+        cls: cls,
+      );
+      if (!mounted) return;
+      if (sent) {
+        adminSnack(context,
+            'Teacher added to ${cls.className}. Invite sent to ${result['email']}');
+      } else {
+        adminSnack(
+          context,
+          'Teacher added, but the invite email could not be sent. '
+              'Use "Resend invite" from the actions menu.',
+          error: true,
+        );
+      }
+    } catch (e) {
+      if (mounted) adminSnack(context, AdminState.errorText(e), error: true);
+    }
+  }
+
   Future<void> _assign(AdminTeacher t) async {
     final s = AdminState.instance;
     if (s.classes.isEmpty) {
@@ -31,6 +177,8 @@ class _AdminTeachersScreenState extends State<AdminTeachersScreen> {
       return;
     }
     String? selected = s.classes.any((c) => c.id == t.classId) ? t.classId : null;
+    // नवीन: Approve न झालेल्या teacher साठी हाच dialog "Approve & assign" करतो.
+    final approving = !t.approved;
 
     final chosen = await showDialog<AdminClass>(
       context: context,
@@ -38,7 +186,9 @@ class _AdminTeachersScreenState extends State<AdminTeachersScreen> {
         builder: (ctx, setD) => AlertDialog(
           backgroundColor: Colors.white,
           surfaceTintColor: Colors.transparent,
-          title: Text('Assign class to ${t.name}'),
+          title: Text(approving
+              ? 'Approve ${t.name} & assign class'
+              : 'Assign class to ${t.name}'),
           content: SizedBox(
             width: 380,
             child: Column(
@@ -53,29 +203,39 @@ class _AdminTeachersScreenState extends State<AdminTeachersScreen> {
                     for (final c in s.classes)
                       DropdownMenuItem(
                         value: c.id,
-                        child: Text(c.className, overflow: TextOverflow.ellipsis),
+                        child: Text(
+                          // आधीच teacher असलेली class दाखवतो, म्हणजे चूक होत नाही.
+                          s.otherTeacherOfClass(c.id, t.uid) == null
+                              ? c.className
+                              : '${c.className}  (taken: '
+                              '${s.otherTeacherOfClass(c.id, t.uid)!.name})',
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ),
                   ],
                   onChanged: (v) => setD(() => selected = v),
                 ),
                 const SizedBox(height: 10),
                 Builder(builder: (_) {
-                  final c = s.classes.where((x) => x.id == selected).toList();
-                  final other = (c.isNotEmpty &&
-                      c.first.teacherUid.isNotEmpty &&
-                      c.first.teacherUid != t.uid)
-                      ? c.first.teacherName
-                      : '';
+                  final other = selected == null
+                      ? null
+                      : s.otherTeacherOfClass(selected!, t.uid);
                   return Text(
-                    other.isEmpty
-                        ? 'The teacher will see this class (students, attendance, '
-                        'diary…) the next time they log in.'
-                        : 'Note: $other is already the teacher of this class. '
-                        'Both teachers will see the class, but the class '
-                        'card will show ${t.name}.',
+                    other != null
+                        ? '${other.name} is already the class teacher of this '
+                        'class. Unassign ${other.name} first, or choose '
+                        'another class.'
+                        : (approving
+                        ? 'The teacher will be approved and will see this '
+                        'class (students, attendance, diary…) from the next '
+                        'login.'
+                        : 'The teacher will see this class (students, '
+                        'attendance, diary…) the next time they log in.'),
                     style: TextStyle(
                       fontSize: 11,
-                      color: other.isEmpty ? AdminColors.muted : AdminColors.orange,
+                      color: other != null
+                          ? AdminColors.red
+                          : AdminColors.muted,
                     ),
                   );
                 }),
@@ -89,13 +249,15 @@ class _AdminTeachersScreenState extends State<AdminTeachersScreen> {
             ),
             FilledButton(
               style: adminPrimaryButton(),
-              onPressed: selected == null
+              // एका class ला एकच teacher: आधीच teacher असेल तर बटण बंद.
+              onPressed: (selected == null ||
+                  s.otherTeacherOfClass(selected!, t.uid) != null)
                   ? null
                   : () => Navigator.pop(
                 ctx,
                 s.classes.firstWhere((c) => c.id == selected),
               ),
-              child: const Text('Assign'),
+              child: Text(approving ? 'Approve & assign' : 'Assign'),
             ),
           ],
         ),
@@ -103,8 +265,19 @@ class _AdminTeachersScreenState extends State<AdminTeachersScreen> {
     );
     if (chosen == null) return;
     try {
-      await s.assignTeacher(t, chosen);
-      if (mounted) adminSnack(context, '${t.name} assigned to ${chosen.className}');
+      if (approving) {
+        await s.approveAndAssign(t, chosen);
+      } else {
+        await s.assignTeacher(t, chosen);
+      }
+      if (mounted) {
+        adminSnack(
+          context,
+          approving
+              ? '${t.name} approved and assigned to ${chosen.className}'
+              : '${t.name} assigned to ${chosen.className}',
+        );
+      }
     } catch (e) {
       if (mounted) adminSnack(context, AdminState.errorText(e), error: true);
     }
@@ -185,6 +358,18 @@ class _AdminTeachersScreenState extends State<AdminTeachersScreen> {
 
   Future<void> _toggleApproval(AdminTeacher t) async {
     final approve = !t.approved;
+    // नवीन: Approve करताना class नसेल / चुकीची असेल / दुसऱ्या teacher ची असेल
+    // तर थेट approve नाही — "Approve & assign class" dialog उघडतो.
+    if (approve) {
+      final s = AdminState.instance;
+      final classOk = t.classId.isNotEmpty &&
+          s.classes.any((c) => c.id == t.classId) &&
+          s.otherTeacherOfClass(t.classId, t.uid) == null;
+      if (!classOk) {
+        await _assign(t);
+        return;
+      }
+    }
     final ok = await adminConfirm(
       context,
       title: approve ? 'Approve ${t.name}?' : 'Revoke access for ${t.name}?',
@@ -252,14 +437,15 @@ class _AdminTeachersScreenState extends State<AdminTeachersScreen> {
   Future<void> _resetPassword(AdminTeacher t) async {
     final ok = await adminConfirm(
       context,
-      title: 'Send password reset email?',
-      message: 'A password reset link will be emailed to ${t.email}.',
+      title: 'Resend invite email?',
+      message: 'A link to set (or reset) the password will be emailed to '
+          '${t.email}.',
       confirmText: 'Send email',
     );
     if (!ok) return;
     try {
       await FirebaseAuth.instance.sendPasswordResetEmail(email: t.email);
-      if (mounted) adminSnack(context, 'Reset email sent to ${t.email}');
+      if (mounted) adminSnack(context, 'Invite email sent to ${t.email}');
     } on FirebaseAuthException catch (e) {
       if (mounted) {
         adminSnack(context, e.message ?? 'Could not send email', error: true);
@@ -269,22 +455,51 @@ class _AdminTeachersScreenState extends State<AdminTeachersScreen> {
     }
   }
 
+  /// नवीन: फक्त ज्यांना आधीपासून योग्य, मोकळी class आहे त्यांनाच bulk approve.
+  /// Class नसलेल्यांना प्रत्येकाला स्वतंत्र "Approve & assign class" करावं लागतं.
   Future<void> _approveAllPending() async {
     final s = AdminState.instance;
     final pending = s.teachers.where((t) => !t.approved).toList();
     if (pending.isEmpty) return;
+
+    final ready = <AdminTeacher>[];
+    final usedClasses = <String>{};
+    for (final t in pending) {
+      final ok = t.classId.isNotEmpty &&
+          s.classes.any((c) => c.id == t.classId) &&
+          s.otherTeacherOfClass(t.classId, t.uid) == null &&
+          !usedClasses.contains(t.classId);
+      if (ok) {
+        ready.add(t);
+        usedClasses.add(t.classId);
+      }
+    }
+    final skipped = pending.length - ready.length;
+    if (ready.isEmpty) {
+      adminSnack(
+        context,
+        'These teachers have no class yet. Use "Approve teacher" on each '
+            'one and choose a class.',
+        error: true,
+      );
+      return;
+    }
     final ok = await adminConfirm(
       context,
-      title: 'Approve all ${pending.length} pending teachers?',
-      message: 'All pending teachers will be able to open the Teacher app.',
-      confirmText: 'Approve all',
+      title: 'Approve ${ready.length} teachers?',
+      message: skipped == 0
+          ? 'All pending teachers already have a class and will be able to '
+          'open the Teacher app.'
+          : '$skipped teacher(s) without a free class will be skipped. '
+          'Approve them one by one and choose a class.',
+      confirmText: 'Approve',
     );
     if (!ok) return;
     try {
-      for (final t in pending) {
+      for (final t in ready) {
         await s.setTeacherApproved(t, true);
       }
-      if (mounted) adminSnack(context, '${pending.length} teachers approved');
+      if (mounted) adminSnack(context, '${ready.length} teachers approved');
     } catch (e) {
       if (mounted) adminSnack(context, AdminState.errorText(e), error: true);
     }
@@ -322,8 +537,15 @@ class _AdminTeachersScreenState extends State<AdminTeachersScreen> {
 
         return AdminPage(
           title: 'Teacher management',
-          subtitle: 'Review registrations, manage access and assign classroom responsibilities.',
+          subtitle: 'Add teachers, send invites, manage access and assign classes.',
           actions: [
+            FilledButton.icon(
+              style: adminPrimaryButton(),
+              onPressed: _addTeacher,
+              icon: const Icon(Icons.person_add_alt_1_rounded, size: 17),
+              label: const Text('Add teacher'),
+            ),
+            const SizedBox(width: 8),
             SizedBox(
               width: 300,
               child: AdminSearchField(
@@ -417,7 +639,7 @@ class _AdminTeachersScreenState extends State<AdminTeachersScreen> {
                     icon: Icons.groups_rounded,
                     label: 'Total teachers',
                     value: '${s.teachers.length}',
-                    note: 'Registered accounts',
+                    note: 'Teacher accounts',
                     color: AdminColors.blue,
                     onTap: () => setState(() => _statusFilter = 'All'),
                   ),
@@ -476,15 +698,15 @@ class _AdminTeachersScreenState extends State<AdminTeachersScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     AdminSectionHeader(
-                      title: 'Registered teachers',
+                      title: 'All teachers',
                       subtitle:
                       'Showing ${list.length} of ${s.teachers.length} accounts · $_statusFilter',
                       icon: Icons.groups_2_rounded,
                     ),
                     if (s.teachers.isEmpty)
                       const EmptyState(
-                        'No teachers have registered yet. Teachers can create '
-                            'their accounts from the Teacher app.',
+                        'No teachers added yet. Tap "Add teacher" to create an '
+                            'account and send the invite.',
                         icon: Icons.person_add_alt_1_rounded,
                       )
                     else if (list.isEmpty)
@@ -567,10 +789,18 @@ class _AdminTeachersScreenState extends State<AdminTeachersScreen> {
                                   ? '—'
                                   : '${s.studentsOfClass(t.classId).length}'),
                               DataCell(StatusChip(
-                                t.approved ? 'Approved' : 'Pending',
-                                t.approved
-                                    ? AdminColors.green
-                                    : AdminColors.orange,
+                                !t.approved
+                                    ? 'Pending'
+                                    : t.inviteStatus == 'sent'
+                                    ? 'Invite sent'
+                                    : t.inviteStatus == 'active'
+                                    ? 'Active'
+                                    : 'Approved',
+                                !t.approved
+                                    ? AdminColors.orange
+                                    : t.inviteStatus == 'sent'
+                                    ? AdminColors.blue
+                                    : AdminColors.green,
                               )),
                               cellText(t.schoolName),
                               cellText(fmtDate(t.createdAt)),
@@ -610,7 +840,7 @@ class _AdminTeachersScreenState extends State<AdminTeachersScreen> {
                                     value: 'approve',
                                     child: Text(t.approved
                                         ? 'Revoke access'
-                                        : 'Approve teacher'),
+                                        : 'Approve & assign class'),
                                   ),
                                   if (t.classId.isNotEmpty)
                                     const PopupMenuItem(
@@ -623,7 +853,7 @@ class _AdminTeachersScreenState extends State<AdminTeachersScreen> {
                                   ),
                                   const PopupMenuItem(
                                     value: 'reset',
-                                    child: Text('Send password reset'),
+                                    child: Text('Resend invite / reset password'),
                                   ),
                                   const PopupMenuItem(
                                     value: 'remove',

@@ -1074,7 +1074,7 @@ class _AdminStudentsScreenState extends State<AdminStudentsScreen> {
                           '', 'Student', 'Roll', 'Class', 'Gender', 'Age',
                           'Attendance', 'Fees due',
                           'Parent / guardian', 'Parent contact', 'Parent app',
-                          'Actions',
+                          'Consent', 'Actions',
                         ],
                         rows: [
                           for (final c in list)
@@ -1204,6 +1204,21 @@ class _AdminStudentsScreenState extends State<AdminStudentsScreen> {
                                     s.parentJoined(c)
                                         ? AdminColors.green
                                         : AdminColors.orange,
+                                  ),
+                                ),
+                                // नवीन: Parent ने पहिल्या login ला दिलेली consent.
+                                DataCell(
+                                  StatusChip(
+                                    !c.consentAnswered
+                                        ? 'Pending'
+                                        : 'Face ${c.consentFace == true ? '✓' : '✗'}'
+                                        ' · Photos ${c.consentPhotos == true ? '✓' : '✗'}',
+                                    !c.consentAnswered
+                                        ? AdminColors.orange
+                                        : (c.consentFace == true &&
+                                        c.consentPhotos == true)
+                                        ? AdminColors.green
+                                        : AdminColors.red,
                                   ),
                                 ),
                                 DataCell(
